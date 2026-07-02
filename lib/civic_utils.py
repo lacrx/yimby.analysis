@@ -85,6 +85,22 @@ def claude_local_call(prompt, system=None, timeout=300):
         return None
 
 
+def load_scored_records():
+    """Load pre-scored records from scored-records.jsonl."""
+    scored_path = REPO_ROOT / "output" / "scored" / "scored-records.jsonl"
+    records = {}
+    if not scored_path.exists():
+        return records
+    for line in scored_path.read_text().splitlines():
+        if line.strip():
+            try:
+                r = json.loads(line)
+                records[str(r.get("meeting_id", ""))] = r
+            except Exception:
+                continue
+    return records
+
+
 def load_json(path):
     try:
         return json.loads(Path(path).read_text())

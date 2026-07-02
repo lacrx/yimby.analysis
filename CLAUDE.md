@@ -3,7 +3,7 @@
 This repo generates housing advocacy intelligence from structured municipal meeting data. It produces executive summaries, council member housing advocacy profiles, leadership profiles across agencies, and intel-driven policy skill updates. All analysis serves YIMBY/Strong Towns advocacy in Oceanside and North San Diego County.
 
 ## Related Projects
-- `yimbydemssd.watchdog`: upstream pipeline — scrapes agendas, transcribes video, extracts structured JSONL. This repo reads from watchdog's `data/` directory via `config.yaml → watchdog_data`
+- `yimby.watchdog`: upstream pipeline — scrapes agendas, transcribes video, extracts structured JSONL. This repo reads from watchdog's `data/` directory via `config.yaml → watchdog_data`
 - `stoside.data`: municipal fiscal intelligence, budget/CIP/vote history
 
 ## Knowledge Base Repos (upstream, read-only)

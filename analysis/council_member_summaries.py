@@ -27,7 +27,7 @@ if ENV_FILE.exists():
             k, v = line.split("=", 1)
             os.environ.setdefault(k.strip(), v.strip())
 
-from civic_utils import claude_local_call, all_meetings_dirs, watchdog_data_dir
+from civic_utils import claude_local_call, all_meetings_dirs, watchdog_data_dir, load_scored_records
 
 WATCHDOG_DATA = watchdog_data_dir()
 STRUCTURED_DIR = WATCHDOG_DATA / "structured"
@@ -274,15 +274,37 @@ def collect_member_mentions_jsonl(member_key, member_info):
     return by_year
 
 
-def format_member_records(records_by_year, member_info):
-    """Format JSONL records into text for the member profile prompt."""
+def format_member_records(records_by_year, member_info, scored_data=None):
+    """Format JSONL records into text for the member profile prompt.
+
+    When scored_data is provided, annotates records with pre-computed scores
+    so the LLM can synthesize narrative without re-deriving scores.
+    """
     parts = []
     total = 0
+    member_name = member_info["full_name"]
+    last_name = member_info["full_name"].split()[-1].lower()
+    net_score = 0
+    action_count = 0
+
     for year in sorted(records_by_year.keys()):
         records = records_by_year[year]
         year_text = f"\n### {year}\n"
         for r in records:
-            lines = [f"**{r.get('body', '?')} — {r.get('date', '?')} ({r.get('doc_type', '?')})**"]
+            mid = str(r.get("meeting_id", ""))
+            scored = scored_data.get(mid) if scored_data else None
+
+            lines = [f"**{r.get('body', '?')} — {r.get('date', '?')}**"]
+
+            if scored:
+                lines.append(f"RECORD SCORE: {scored.get('advocacy_score', '?')} — {scored.get('advocacy_reason', '')}")
+                for ps in scored.get("position_scores", []):
+                    ps_name = ps.get("member", "").lower()
+                    if last_name in ps_name or ps_name in [a.lower() for a in member_info.get("aliases", [])]:
+                        lines.append(f"MEMBER SCORE: {ps['member']} net {ps.get('score', 0):+d} ({ps.get('action_summary', '')})")
+                        net_score += ps.get("score", 0)
+                        action_count += 1
+
             for v in r.get("votes", []):
                 vote_line = f"VOTE: {v['item']} → {v['result']}"
                 if v.get("yes"):
@@ -308,13 +330,15 @@ def format_member_records(records_by_year, member_info):
             total += 1
         parts.append(year_text)
 
-    return "\n".join(parts), total
+    return "\n".join(parts), total, net_score, action_count
 
 
-def summarize_member(member_key, member_info, mentions_by_year, source="prose"):
+def summarize_member(member_key, member_info, mentions_by_year, source="prose", scored_data=None):
     """Generate housing advocacy summary for one council member."""
     if source == "jsonl":
-        all_text, total_mentions = format_member_records(mentions_by_year, member_info)
+        all_text, total_mentions, net_score, action_count = format_member_records(
+            mentions_by_year, member_info, scored_data=scored_data
+        )
     else:
         combined_parts = []
         total_mentions = 0
@@ -332,12 +356,17 @@ def summarize_member(member_key, member_info, mentions_by_year, source="prose"):
     if len(all_text) > 180000:
         all_text = all_text[:180000] + "\n[...truncated...]"
 
+    score_header = ""
+    if source == "jsonl" and scored_data and action_count > 0:
+        grade = "A" if net_score >= 10 else "B" if net_score >= 5 else "C" if net_score >= 0 else "D" if net_score >= -9 else "F"
+        score_header = f"\n**Pre-computed net score:** {net_score:+d} ({action_count} scored actions) → Grade: {grade}\nScores are pre-computed using the ACTIONS OVER WORDS rubric. Use these scores as the basis for your grade — do NOT re-derive scores. Focus your analysis on narrative synthesis: vote patterns, alliances, evolution over time, and strategic implications.\n"
+
     prompt = f"""You are analyzing the record of an Oceanside, CA elected official from the perspective of a housing advocate.
 
 **Official:** {member_info['full_name']}
 **Title:** {member_info['title']}
 **Terms:** {member_info['terms']}
-**Total meeting references found:** {total_mentions}
+**Total meeting references found:** {total_mentions}{score_header}
 
 Below are all passages from City Council and commission meeting summaries (agendas and minutes) that mention this official. These span multiple years.
 
@@ -477,6 +506,9 @@ def main():
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     meeting_info = load_meeting_info()
+    scored_data = load_scored_records() if source == "jsonl" else {}
+    if scored_data:
+        print(f"Loaded {len(scored_data)} pre-scored records")
 
     member_summaries = {}
 
@@ -501,7 +533,7 @@ def main():
         print(f"  Found {total} meeting references across {years[0]}–{years[-1]}")
         print(f"  Generating housing advocacy summary...")
 
-        summary = summarize_member(member_key, member, mentions, source=source)
+        summary = summarize_member(member_key, member, mentions, source=source, scored_data=scored_data)
         member_summaries[member["full_name"]] = summary
 
         outfile = OUTPUT_DIR / f"{member_key.lower()}.md"

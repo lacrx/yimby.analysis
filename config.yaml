@@ -1,2 +1,2 @@
-watchdog_data: /home/thomas/repos/yimbydemssd.watchdog/data
+watchdog_data: /home/thomas/repos/yimby.watchdog/data
 # Later: s3://bucket/structured/

@@ -25,7 +25,7 @@ if ENV_FILE.exists():
             k, v = line.split("=", 1)
             os.environ.setdefault(k.strip(), v.strip())
 
-from civic_utils import claude_local_call, all_meetings_dirs, watchdog_data_dir
+from civic_utils import claude_local_call, all_meetings_dirs, watchdog_data_dir, load_scored_records
 
 WATCHDOG_DATA = watchdog_data_dir()
 SUMMARIES_DIR = WATCHDOG_DATA / "summaries"
@@ -38,6 +38,7 @@ SKILLS_DIR = WATCHDOG_DATA.parent / ".claude" / "skills"
 SKILL_NAMES = ["ca-housing-law"]
 
 MODE = "api"  # set by main()
+SCORED_DATA = {}  # set by main() — pre-computed scores from score_records.py
 client = None  # initialized only in API mode
 
 
@@ -194,13 +195,25 @@ def _filter_fiscal(fiscal):
     return _is_relevant(fiscal.get("description", ""))
 
 
-def format_records_for_prompt(records):
-    """Format JSONL records as compact text for Claude, filtered to YIMBY/Strong Towns relevance."""
+def format_records_for_prompt(records, scored_data=None):
+    """Format JSONL records as compact text for Claude, filtered to YIMBY/Strong Towns relevance.
+
+    When scored_data is provided, annotates records with pre-computed advocacy scores.
+    """
     parts = []
     for r in records:
         if r.get("procedural_only"):
             continue
         lines = [f"### {r.get('date', r.get('month', '?'))} — {r.get('doc_type', 'monthly digest')}"]
+
+        mid = str(r.get("meeting_id", ""))
+        scored = scored_data.get(mid) if scored_data else None
+        if scored:
+            lines.append(f"SCORED: {scored.get('advocacy_score', '?')} — {scored.get('advocacy_reason', '')}")
+            for ps in scored.get("position_scores", []):
+                if ps.get("score", 0) != 0:
+                    lines.append(f"  MEMBER: {ps['member']} {ps.get('score', 0):+d} ({ps.get('action_summary', '')[:60]})")
+
         if r.get("activity_summary"):
             act = r["activity_summary"]
             lines.append(f"Activity: {act.get('total_votes', 0)} votes, {act.get('total_housing_items', 0)} housing items, {act.get('total_legal_flags', 0)} legal flags")
@@ -270,7 +283,7 @@ def summarize_month_chunk(chunk, year):
     """Summarize a chunk of monthly digests (1+ months)."""
     months = [d.get("month", "?") for d in chunk]
     bodies = sorted(set(b for d in chunk for b in d.get("bodies", [])))
-    text = format_records_for_prompt(chunk)
+    text = format_records_for_prompt(chunk, scored_data=SCORED_DATA)
     count = len([r for r in chunk if not r.get("procedural_only")])
 
     if len(text) > 150000:
@@ -341,7 +354,7 @@ def summarize_year_monthly(year, digests):
 
 def summarize_body_year(body, year, summaries, source="prose"):
     if source in ("jsonl", "monthly"):
-        text = format_records_for_prompt(summaries)
+        text = format_records_for_prompt(summaries, scored_data=SCORED_DATA)
         count = len([r for r in summaries if not r.get("procedural_only")])
     else:
         combined = []
@@ -486,7 +499,9 @@ def main():
         import anthropic
         client = anthropic.Anthropic()
 
-    print(f"Mode: {MODE} | Source: {source} | Force: {args.force}")
+    global SCORED_DATA
+    SCORED_DATA = load_scored_records()
+    print(f"Mode: {MODE} | Source: {source} | Force: {args.force} | Scored: {len(SCORED_DATA)} records")
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 

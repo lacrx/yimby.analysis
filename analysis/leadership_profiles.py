@@ -35,7 +35,7 @@ if ENV_FILE.exists():
             k, v = line.split("=", 1)
             os.environ.setdefault(k.strip(), v.strip())
 
-from civic_utils import claude_local_call, watchdog_data_dir
+from civic_utils import claude_local_call, watchdog_data_dir, load_scored_records
 
 WATCHDOG_DATA = watchdog_data_dir()
 STRUCTURED_DIR = WATCHDOG_DATA / "structured"
@@ -355,21 +355,23 @@ def is_housing_relevant(record):
     return any(kw in text for kw in HOUSING_KEYWORDS)
 
 
-def format_records_for_prompt(records, member_info):
+def format_records_for_prompt(records, member_info, scored_data=None):
     """Format meeting records into text for profile prompt.
 
     For figures with many records, filter to housing-relevant ones
-    to keep the prompt within token budget.
+    to keep the prompt within token budget. When scored_data is provided,
+    annotates with pre-computed scores.
     """
-    # For large record sets, filter to housing-relevant records only
     if len(records) > 60:
         filtered = [r for r in records if is_housing_relevant(r)]
         if len(filtered) < 10:
             filtered = records[:60]
         records = filtered
-        # If still too many, keep the most recent (most relevant to current advocacy)
         if len(records) > 80:
             records = sorted(records, key=lambda r: r.get("date", ""), reverse=True)[:80]
+
+    last_name = member_info.get("full_name", "").split()[-1].lower() if member_info.get("full_name") else ""
+    aliases = [a.lower() for a in member_info.get("aliases", [])]
 
     by_year = defaultdict(list)
     for r in records:
@@ -380,12 +382,28 @@ def format_records_for_prompt(records, member_info):
 
     parts = []
     total = 0
+    net_score = 0
+    action_count = 0
     for year in sorted(by_year.keys()):
         year_text = f"\n### {year}\n"
         for r in by_year[year]:
             if r.get("procedural_only"):
                 continue
+
+            mid = str(r.get("meeting_id", ""))
+            scored = scored_data.get(mid) if scored_data else None
+
             lines = [f"**{r.get('body', '?')} — {r.get('date', '?')} — {r.get('agency', '?')}**"]
+
+            if scored:
+                lines.append(f"SCORED: {scored.get('advocacy_score', '?')} — {scored.get('advocacy_reason', '')}")
+                for ps in scored.get("position_scores", []):
+                    ps_name = ps.get("member", "").lower()
+                    if last_name in ps_name or ps_name in aliases:
+                        lines.append(f"MEMBER SCORE: {ps['member']} {ps.get('score', 0):+d} ({ps.get('action_summary', '')[:60]})")
+                        net_score += ps.get("score", 0)
+                        action_count += 1
+
             for v in r.get("votes", []):
                 vote_line = f"VOTE: {v['item']} → {v['result']}"
                 if v.get("yes"):
@@ -411,14 +429,14 @@ def format_records_for_prompt(records, member_info):
             total += 1
         parts.append(year_text)
 
-    return "\n".join(parts), total
+    return "\n".join(parts), total, net_score, action_count
 
 
 # ── Profile generation ──
 
-def generate_profile(slug, info, records):
+def generate_profile(slug, info, records, scored_data=None):
     """Generate a housing advocacy profile for one figure."""
-    text, total = format_records_for_prompt(records, info)
+    text, total, net_score, action_count = format_records_for_prompt(records, info, scored_data=scored_data)
 
     if total == 0:
         return None
@@ -446,12 +464,27 @@ projects advance to council. Grade using the same housing advocacy framework.
 
 These votes have maximum direct impact on Oceanside housing outcomes."""
 
+    score_header = ""
+    if scored_data and action_count > 0:
+        grade_thresholds = [(10, "A"), (5, "B"), (0, "C"), (-1, "D")]
+        grade = "F"
+        for threshold, letter in grade_thresholds:
+            if net_score >= threshold:
+                grade = letter
+                break
+        score_header = f"""
+**PRE-COMPUTED SCORE:** Net score {net_score:+d} across {action_count} scored actions → Grade {grade}
+These scores were computed deterministically from voting records using the rubric below.
+Use these scores as your baseline. Do NOT re-derive scores from scratch — validate against
+the MEMBER SCORE annotations in the meeting data and adjust only if you find clear errors."""
+
     prompt = f"""You are analyzing the record of a local government official from the perspective of a housing advocate in Oceanside/North San Diego County, CA.
 
 **Official:** {info['full_name']}
 **Title:** {info['title']}
 **Terms:** {info['terms']}
 **Total substantive meeting references:** {total}
+{score_header}
 
 {role_context}
 
@@ -551,6 +584,10 @@ def cmd_build(args):
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     state = load_state()
 
+    scored_data = load_scored_records()
+    if scored_data:
+        print(f"Loaded {len(scored_data)} pre-scored records")
+
     print("Scanning meeting data for named figures...")
     all_mentions = collect_all_mentions()
 
@@ -592,7 +629,7 @@ def cmd_build(args):
         group = info.get("agency_group", "other")
         print(f"\n  {info['full_name']} ({info['title']}, {len(records)} records)...")
 
-        summary = generate_profile(slug, info, records)
+        summary = generate_profile(slug, info, records, scored_data=scored_data)
         if summary is None:
             print(f"    No substantive records, skipping.")
             continue

@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
-"""Score structured meeting records using policy-informed analysis.
+"""Score structured meeting records using hybrid deterministic + LLM analysis.
 
-Reads objective extraction data from watchdog, applies the ACTIONS OVER WORDS
-scoring rubric with CA housing law context, and produces scored records.
+Deterministic code handles ~80% of scoring (clear rubric lookups). LLM-as-judge
+resolves ambiguous cases: inclusionary weaponization, CEQA weaponization,
+community character dogwhistles. Every score has an audit trail back to source
+data and rubric line.
 
 Usage:
     python score_records.py                    # score all unscored records
@@ -10,11 +12,13 @@ Usage:
     python score_records.py --meeting 1423119  # score specific meeting
     python score_records.py --stats            # show scoring statistics
     python score_records.py --mode api         # use API instead of claude -p
+    python score_records.py --dry-run          # show scores without writing
 """
 
 import argparse
 import json
 import os
+import re
 import sys
 from collections import defaultdict
 from pathlib import Path
@@ -44,6 +48,75 @@ MODE = "local"
 client = None
 
 
+# ---------------------------------------------------------------------------
+# Rubric tables — deterministic score mappings
+# ---------------------------------------------------------------------------
+
+HOUSING_OUTCOME_SCORES = {
+    ("zoning", "approved"): +2,
+    ("zoning", "denied"): -2,
+    ("density", "approved"): +2,
+    ("density", "denied"): -2,
+    ("permit", "approved"): +2,
+    ("permit", "denied"): -2,
+    ("affordable", "approved"): +2,
+    ("affordable", "denied"): -2,
+    ("adu", "approved"): +2,
+    ("adu", "denied"): -2,
+    ("transit_oriented", "approved"): +2,
+    ("transit_oriented", "denied"): -2,
+    ("state_compliance", "approved"): +1,
+    ("state_compliance", "denied"): -1,
+}
+
+RUBRIC_LABELS = {
+    +2: "approve housing projects → +2",
+    +1: "moderate pro-housing action → +1",
+    -1: "anti-housing action → -1",
+    -2: "vote AGAINST housing projects → -2",
+}
+
+POSITION_ACTION_BASE = {
+    "voted yes": +2,
+    "voted no": -2,
+    "moved": +1,
+    "seconded": +1,
+    "spoke for": +1,
+    "spoke against": None,  # ambiguous — needs context
+    "amended": 0,
+    "abstained": 0,
+    "absent": 0,
+}
+
+STANCE_SCORES = {
+    "pro_housing": +1,
+    "anti_housing": -1,
+    "mixed": None,       # ambiguous — needs LLM
+    "procedural": 0,
+}
+
+HIGH_EXPOSURE_FLAGS = {"HAA", "SB330", "SB35", "SB79", "density_bonus"}
+
+DOGWHISTLE_PATTERNS = [
+    r"community\s+character",
+    r"neighborhood\s+compatib",
+    r"neighborhood\s+character",
+    r"preserve\s+the\s+character",
+    r"scale\s+and\s+mass",
+    r"out\s+of\s+character",
+    r"too\s+(tall|dense|big|large|massive)",
+    r"doesn'?t\s+fit",
+    r"traffic\s+(impact|concern|worsen)",
+    r"parking\s+(concern|impact|shortage|problem)",
+]
+
+DOGWHISTLE_RE = re.compile("|".join(DOGWHISTLE_PATTERNS), re.IGNORECASE)
+
+
+# ---------------------------------------------------------------------------
+# Skills / LLM support (only used for ambiguity resolution)
+# ---------------------------------------------------------------------------
+
 def load_skills():
     parts = []
     for name in SKILL_NAMES:
@@ -57,46 +130,6 @@ def load_skills():
 
 
 SKILLS_CONTEXT = load_skills()
-
-SCORING_RUBRIC = """## Scoring Rubric: ACTIONS OVER WORDS
-
-Score each meeting record based on what HAPPENED, not what was said.
-
-### Advocacy Score (record-level)
-- **green**: Actions align with state housing law compliance — approving compliant projects, upzoning, granting density bonus, complying with SB 79/SB 35
-- **yellow**: Mixed signals — some pro-housing and some restrictive actions, or procedural items with housing implications
-- **red**: Actions create legal exposure — denying compliant projects, downzoning, adding non-objective standards, deferring state mandates, weaponizing CEQA against housing
-- **neutral**: No housing-relevant actions in this record
-
-### Key Legal Tests
-- SB 79 deferral/exemption: RED if deferring on sites that clearly qualify under the statute
-- Density bonus exclusion from streamlining: RED — density bonus law (Gov. Code § 65915) is mandatory
-- Raising inclusionary requirements: context-dependent. Raising citywide rates as policy = YELLOW (reasonable policy debate). Demanding a specific project exceed existing requirements to deny it = RED (inclusionary weaponization)
-- Approving compliant housing projects: GREEN
-- Consent calendar with routine items: NEUTRAL
-
-### Per-Member Action Scoring
-- **Strong Pro-Housing (+2)**: remove/raise density caps, eliminate parking minimums, approve housing projects, support state preemption (SB 9/10/35)
-- **Moderate Pro-Housing (+1)**: inclusionary zoning requirements, tenant protections, streamline approvals, transit-oriented density
-- **Anti-Housing (-1)**: maintain parking requirements, cite "community character" against density, oppose state mandates
-- **Strong Anti-Housing (-2)**: add/maintain density caps, vote AGAINST housing projects, weaponize inclusionary as poison pill, weaponize CEQA
-- **Neutral (0)**: procedural actions, non-housing items
-
-### Critical Distinctions
-- Tenant protections are genuinely pro-housing (+1). Never penalize tenant protection votes.
-- Both market-rate and affordable housing add supply. Blocking either is anti-housing.
-- Inclusionary weaponization test: raising citywide inclusionary rates = +1. Citing inclusionary shortfall to DENY a compliant project = -2.
-
-### Output Format
-Return ONLY valid JSON:
-{
-  "advocacy_score": "green | yellow | red | neutral",
-  "advocacy_reason": "one sentence citing the specific action and applicable law",
-  "position_scores": [
-    {"member": "name", "action_summary": "what they did", "score": +2|+1|0|-1|-2, "rubric_cite": "which rubric line applies"}
-  ]
-}
-"""
 
 
 def call_claude(prompt, max_tokens=2000):
@@ -117,82 +150,31 @@ def call_claude(prompt, max_tokens=2000):
         return resp.content[0].text
 
 
-def format_record_for_scoring(record):
-    """Format a meeting record as compact text for the scoring prompt."""
-    lines = [f"Meeting: {record.get('body', '?')} — {record.get('date', '?')} — {record.get('agency', '?')}"]
-
-    for v in record.get("votes", []):
-        vote_line = f"VOTE: {v['item']} → {v['result']}"
-        if v.get("yes"):
-            vote_line += f" (yes: {', '.join(v['yes'])})"
-        if v.get("no"):
-            vote_line += f" (no: {', '.join(v['no'])})"
-        lines.append(vote_line)
-
-    for h in record.get("housing_items", []):
-        h_line = f"HOUSING: [{h.get('type', '?')}] {h.get('description', '?')}"
-        if h.get("outcome"):
-            h_line += f" → {h['outcome']}"
-        if h.get("state_law_flags"):
-            h_line += f" [flags: {', '.join(h['state_law_flags'])}]"
-        lines.append(h_line)
-
-    for cp in record.get("council_positions", []):
-        label = cp.get("action") or cp.get("stance", "unknown")
-        lines.append(f"POSITION: {cp.get('member', '?')} — {label}: {cp.get('evidence', '')}")
-        if cp.get("on"):
-            lines[-1] += f" (on: {cp['on']})"
-
-    for flag in record.get("legal_flags", []):
-        lines.append(f"LEGAL: {flag}")
-
-    for q in record.get("key_quotes", []):
-        lines.append(f"QUOTE: {q}")
-
-    return "\n".join(lines)
-
-
-def score_record(record):
-    """Score a single meeting record using the policy-informed rubric."""
-    formatted = format_record_for_scoring(record)
-    if len(formatted.strip().split("\n")) <= 1:
-        return {"advocacy_score": "neutral", "advocacy_reason": "No substantive content", "position_scores": []}
-
-    prompt = f"{SCORING_RUBRIC}\n\n---\n\nScore this meeting record:\n\n{formatted}"
-
-    response = call_claude(prompt)
-    if not response:
-        return None
-
-    try:
-        text = response.strip()
-        if text.startswith("```"):
-            text = text.split("\n", 1)[1].rsplit("```", 1)[0]
-        return json.loads(text)
-    except (json.JSONDecodeError, IndexError):
-        print(f"  Failed to parse scoring response")
-        return None
-
+# ---------------------------------------------------------------------------
+# Data loading
+# ---------------------------------------------------------------------------
 
 def load_records(meeting_filter=None):
-    """Load meeting records from watchdog structured data."""
-    records = []
-    merged_dir = STRUCTURED_DIR / "meetings"
-    if not merged_dir.exists():
-        print("No merged meetings directory found.")
-        return records
+    """Load meeting records from meetings-combined.jsonl."""
+    combined = STRUCTURED_DIR / "meetings-combined.jsonl"
+    if not combined.exists():
+        print(f"Not found: {combined}")
+        return []
 
-    for jf in sorted(merged_dir.glob("*.json")):
-        if meeting_filter and jf.stem not in meeting_filter:
+    records = []
+    for line in combined.open():
+        line = line.strip()
+        if not line:
             continue
         try:
-            r = json.loads(jf.read_text())
+            r = json.loads(line)
             if r.get("procedural_only"):
+                continue
+            if meeting_filter and str(r.get("meeting_id", "")) not in meeting_filter:
                 continue
             records.append(r)
         except Exception:
             continue
-
     return records
 
 
@@ -204,18 +186,530 @@ def load_existing_scores():
             if line.strip():
                 try:
                     r = json.loads(line)
-                    scores[r.get("meeting_id", "")] = r
+                    scores[str(r.get("meeting_id", ""))] = r
                 except Exception:
                     continue
     return scores
 
+
+# ---------------------------------------------------------------------------
+# Deterministic scoring
+# ---------------------------------------------------------------------------
+
+def _match_position_to_housing(position, housing_items):
+    """Try to link a council_position to a housing item by text similarity."""
+    on_text = (position.get("on") or "").lower()
+    evidence = (position.get("evidence") or "").lower()
+    combined = on_text + " " + evidence
+
+    if not combined.strip():
+        return None
+
+    best_idx = None
+    best_overlap = 0
+    for i, h in enumerate(housing_items):
+        desc = (h.get("description") or "").lower()
+        if not desc:
+            continue
+        desc_words = set(desc.split())
+        combined_words = set(combined.split())
+        overlap = len(desc_words & combined_words)
+        if overlap > best_overlap and overlap >= 3:
+            best_overlap = overlap
+            best_idx = i
+
+    return best_idx
+
+
+def score_deterministic(record):
+    """Score a meeting record using deterministic rubric lookup.
+
+    Returns (action_scores, flags) where:
+    - action_scores: list of ActionScore dicts with full audit trail
+    - flags: list of legal exposure flags
+    """
+    action_scores = []
+    flags = []
+    housing_items = record.get("housing_items", [])
+    votes = record.get("votes", [])
+    positions = record.get("council_positions", [])
+    legal_flags = record.get("legal_flags", [])
+
+    # 1. Score housing items by outcome
+    for idx, h in enumerate(housing_items):
+        htype = h.get("type", "")
+        outcome = h.get("outcome", "")
+        state_flags = h.get("state_law_flags", [])
+        desc = h.get("description", "?")
+
+        score = HOUSING_OUTCOME_SCORES.get((htype, outcome))
+        if score is None:
+            continue
+
+        action_scores.append({
+            "member": None,
+            "score": score,
+            "method": "deterministic",
+            "source_type": "housing_item",
+            "source_idx": idx,
+            "item_summary": f"[{htype}] {desc[:80]} → {outcome}",
+            "rubric_line": RUBRIC_LABELS.get(score, f"housing {outcome} → {score:+d}"),
+            "evidence": outcome,
+        })
+
+        if outcome == "denied" and set(state_flags) & HIGH_EXPOSURE_FLAGS:
+            flags.append(f"State law exposure: {', '.join(state_flags)} — {desc[:60]} denied")
+
+    # 2. Score per-member positions on housing items
+    for idx, pos in enumerate(positions):
+        member = pos.get("member", "?")
+        action = pos.get("action", "")
+        stance = pos.get("stance", "")
+        evidence_text = pos.get("evidence", "")
+
+        # Try to link to a housing item
+        housing_idx = _match_position_to_housing(pos, housing_items)
+
+        # Stance-based scoring (dominant pattern: 97% of positions)
+        if stance and not action:
+            stance_score = STANCE_SCORES.get(stance)
+            if stance_score is None:
+                continue  # "mixed" → handled by ambiguity detection
+            if stance_score == 0:
+                continue  # "procedural" → no score
+
+            h_desc = ""
+            if housing_idx is not None:
+                h_desc = housing_items[housing_idx].get("description", "?")[:60]
+            elif not housing_items:
+                continue  # no housing context for this stance
+
+            action_scores.append({
+                "member": member,
+                "score": stance_score,
+                "method": "deterministic",
+                "source_type": "position",
+                "source_idx": idx,
+                "item_summary": f"stance:{stance} — {h_desc or evidence_text[:60]}",
+                "rubric_line": f"{stance} stance → {stance_score:+d}",
+                "evidence": evidence_text[:100],
+            })
+            continue
+
+        # Action-based scoring (minority pattern: moved/seconded/voted no/etc)
+        if not action:
+            continue
+
+        is_housing_action = housing_idx is not None
+        if not is_housing_action:
+            continue
+
+        h = housing_items[housing_idx]
+        h_desc = h.get("description", "?")[:60]
+        h_outcome = h.get("outcome", "?")
+
+        base_score = POSITION_ACTION_BASE.get(action)
+        if base_score is None:
+            continue
+
+        if base_score == 0:
+            continue  # abstained/absent/amended — no score
+
+        if action == "voted yes" and h_outcome == "approved":
+            score = +2
+            rubric = "voted yes on approved housing → +2"
+        elif action == "voted no":
+            score = -2
+            rubric = "voted no on housing project → -2"
+        elif action in ("moved", "seconded"):
+            score = +1
+            rubric = f"{action} housing item → +1"
+        elif action == "spoke for":
+            score = +1
+            rubric = "spoke for housing → +1"
+        else:
+            score = base_score
+            rubric = RUBRIC_LABELS.get(score, f"{action} → {score:+d}")
+
+        action_scores.append({
+            "member": member,
+            "score": score,
+            "method": "deterministic",
+            "source_type": "position",
+            "source_idx": idx,
+            "item_summary": f"{action} on {h_desc}",
+            "rubric_line": rubric,
+            "evidence": evidence_text[:100],
+        })
+
+    # 3. Score voters from vote records cross-referenced with housing items
+    for vote in votes:
+        vote_item = (vote.get("item") or "").lower()
+        result = (vote.get("result") or "").lower()
+
+        matched_housing = None
+        for i, h in enumerate(housing_items):
+            desc = (h.get("description") or "").lower()
+            if not desc:
+                continue
+            desc_words = set(desc.split())
+            vote_words = set(vote_item.split())
+            if len(desc_words & vote_words) >= 4:
+                matched_housing = i
+                break
+
+        if matched_housing is None:
+            continue
+
+        h = housing_items[matched_housing]
+        h_desc = h.get("description", "?")[:60]
+
+        is_approved = "approved" in result or "passed" in result
+        is_denied = "denied" in result or "failed" in result
+
+        if not (is_approved or is_denied):
+            continue
+
+        already_scored = {
+            a["member"] for a in action_scores
+            if a["source_type"] == "position" and a["member"]
+        }
+
+        for name in vote.get("yes", []):
+            if name in already_scored:
+                continue
+            score = +2 if is_approved else +2
+            action_scores.append({
+                "member": name,
+                "score": score,
+                "method": "deterministic",
+                "source_type": "vote",
+                "source_idx": matched_housing,
+                "item_summary": f"voted yes on {h_desc}",
+                "rubric_line": "voted yes on housing → +2",
+                "evidence": f"yes vote, result: {result}",
+            })
+
+        for name in vote.get("no", []):
+            if name in already_scored:
+                continue
+            score = -2
+            action_scores.append({
+                "member": name,
+                "score": score,
+                "method": "deterministic",
+                "source_type": "vote",
+                "source_idx": matched_housing,
+                "item_summary": f"voted no on {h_desc}",
+                "rubric_line": "voted no on housing → -2",
+                "evidence": f"no vote, result: {result}",
+            })
+
+    return action_scores, flags
+
+
+# ---------------------------------------------------------------------------
+# Ambiguity detection
+# ---------------------------------------------------------------------------
+
+def detect_ambiguities(record):
+    """Detect cases needing LLM interpretation. Returns list of ambiguity dicts."""
+    ambiguities = []
+    housing_items = record.get("housing_items", [])
+    positions = record.get("council_positions", [])
+    quotes = record.get("key_quotes", [])
+    legal_flags = record.get("legal_flags", [])
+    has_housing = len(housing_items) > 0
+
+    # a) Community character dogwhistles in positions/quotes
+    if has_housing:
+        for idx, pos in enumerate(positions):
+            evidence = pos.get("evidence", "")
+            if DOGWHISTLE_RE.search(evidence):
+                ambiguities.append({
+                    "type": "dogwhistle",
+                    "source": "position",
+                    "source_idx": idx,
+                    "member": pos.get("member", "?"),
+                    "text": evidence,
+                    "context": f"Action: {pos.get('action', '?')} on: {pos.get('on', '?')}",
+                })
+
+        for idx, quote in enumerate(quotes):
+            if DOGWHISTLE_RE.search(quote):
+                ambiguities.append({
+                    "type": "dogwhistle",
+                    "source": "quote",
+                    "source_idx": idx,
+                    "member": None,
+                    "text": quote,
+                    "context": "key quote from meeting",
+                })
+
+    # a2) Mixed stances on housing items — need LLM to interpret
+    if has_housing:
+        for idx, pos in enumerate(positions):
+            stance = pos.get("stance", "")
+            if stance == "mixed":
+                ambiguities.append({
+                    "type": "mixed_stance",
+                    "source": "position",
+                    "source_idx": idx,
+                    "member": pos.get("member", "?"),
+                    "text": pos.get("evidence", ""),
+                    "context": f"Stance: mixed on: {pos.get('on', '?')}",
+                })
+
+    # b) Inclusionary weaponization
+    for idx, pos in enumerate(positions):
+        action = pos.get("action") or pos.get("stance", "")
+        evidence = (pos.get("evidence") or "").lower()
+        if action in ("spoke against", "voted no", "anti_housing") and "inclusionary" in evidence:
+            ambiguities.append({
+                "type": "inclusionary_weaponization",
+                "source": "position",
+                "source_idx": idx,
+                "member": pos.get("member", "?"),
+                "text": pos.get("evidence", ""),
+                "context": f"Action: {action} on: {pos.get('on', '?')}",
+            })
+
+    # c) CEQA weaponization
+    ceqa_in_flags = any("ceqa" in f.lower() for f in legal_flags)
+    denied_housing = any(h.get("outcome") == "denied" for h in housing_items)
+    continued_housing = any(h.get("outcome") == "continued" for h in housing_items)
+
+    if ceqa_in_flags and (denied_housing or continued_housing):
+        ambiguities.append({
+            "type": "ceqa_weaponization",
+            "source": "legal_flags",
+            "source_idx": None,
+            "member": None,
+            "text": "; ".join(f for f in legal_flags if "ceqa" in f.lower()),
+            "context": f"Housing denied/continued with CEQA flags present",
+        })
+
+    for idx, pos in enumerate(positions):
+        evidence = (pos.get("evidence") or "").lower()
+        if "ceqa" in evidence and has_housing:
+            action = pos.get("action") or pos.get("stance", "")
+            if action in ("spoke against", "voted no"):
+                ambiguities.append({
+                    "type": "ceqa_weaponization",
+                    "source": "position",
+                    "source_idx": idx,
+                    "member": pos.get("member", "?"),
+                    "text": pos.get("evidence", ""),
+                    "context": f"Action: {action} on: {pos.get('on', '?')}",
+                })
+
+    return ambiguities
+
+
+# ---------------------------------------------------------------------------
+# LLM-as-judge for ambiguities
+# ---------------------------------------------------------------------------
+
+AMBIGUITY_PROMPT = """You are scoring municipal meeting actions using the ACTIONS OVER WORDS rubric.
+
+Score each ambiguous item below. For each, determine the correct score and cite the rubric line.
+
+### Scoring Rules
+- Community character/neighborhood compatibility cited AGAINST density or housing: -1
+- Community character in general plan discussion (not opposing specific housing): 0
+- Inclusionary weaponization (demanding a specific project exceed existing requirements to deny it): -2
+- Raising citywide inclusionary rates as policy: +1
+- CEQA used as pretext to block/delay housing: -2
+- Legitimate CEQA environmental concern (not targeting housing specifically): 0
+- Tenant protections: always +1, never penalize
+
+Return ONLY valid JSON — an array of objects:
+[
+  {"idx": 0, "score": -1, "rubric_cite": "community character against density → -1", "reasoning": "one sentence"}
+]
+
+### Items to score:
+"""
+
+
+def resolve_ambiguities(record, ambiguities):
+    """Batch-resolve ambiguous items via single LLM call.
+
+    Returns list of ActionScore dicts for each resolved ambiguity.
+    """
+    if not ambiguities:
+        return []
+
+    items_text = []
+    for i, amb in enumerate(ambiguities):
+        items_text.append(
+            f"[{i}] Type: {amb['type']}\n"
+            f"    Member: {amb.get('member', 'unknown')}\n"
+            f"    Text: {amb['text']}\n"
+            f"    Context: {amb['context']}"
+        )
+
+    meeting_ctx = (
+        f"Meeting: {record.get('body', '?')} — {record.get('date', '?')} — "
+        f"{record.get('agency', '?')}"
+    )
+
+    prompt = AMBIGUITY_PROMPT + meeting_ctx + "\n\n" + "\n\n".join(items_text)
+
+    response = call_claude(prompt, max_tokens=1000)
+    if not response:
+        return []
+
+    try:
+        text = response.strip()
+        if text.startswith("```"):
+            text = text.split("\n", 1)[1].rsplit("```", 1)[0]
+        judgments = json.loads(text)
+    except (json.JSONDecodeError, IndexError):
+        print(f"  Failed to parse ambiguity response")
+        return []
+
+    resolved = []
+    for j in judgments:
+        idx = j.get("idx", 0)
+        if idx >= len(ambiguities):
+            continue
+        amb = ambiguities[idx]
+        resolved.append({
+            "member": amb.get("member"),
+            "score": j.get("score", 0),
+            "method": "llm_judge",
+            "source_type": amb["source"],
+            "source_idx": amb["source_idx"],
+            "item_summary": f"{amb['type']}: {amb['text'][:60]}",
+            "rubric_line": j.get("rubric_cite", "LLM judgment"),
+            "evidence": j.get("reasoning", ""),
+        })
+
+    return resolved
+
+
+# ---------------------------------------------------------------------------
+# Score aggregation
+# ---------------------------------------------------------------------------
+
+def aggregate_scores(action_scores, flags):
+    """Derive record-level advocacy_score and per-member position_scores."""
+
+    member_totals = defaultdict(lambda: {"scores": [], "actions": []})
+    has_housing_score = False
+    has_negative = False
+    has_positive = False
+
+    for a in action_scores:
+        member = a.get("member")
+        score = a.get("score", 0)
+
+        if a["source_type"] in ("housing_item", "vote", "position"):
+            has_housing_score = True
+            if score > 0:
+                has_positive = True
+            if score < 0:
+                has_negative = True
+
+        if member:
+            member_totals[member]["scores"].append(score)
+            member_totals[member]["actions"].append(a)
+
+    # Record-level advocacy score
+    if flags:
+        advocacy_score = "red"
+    elif not has_housing_score:
+        advocacy_score = "neutral"
+    elif has_negative and has_positive:
+        advocacy_score = "yellow"
+    elif has_negative:
+        advocacy_score = "red"
+    elif has_positive:
+        advocacy_score = "green"
+    else:
+        advocacy_score = "neutral"
+
+    # Build reason
+    if flags:
+        advocacy_reason = flags[0]
+    elif advocacy_score == "green":
+        count = sum(1 for a in action_scores if a.get("score", 0) > 0)
+        advocacy_reason = f"{count} pro-housing actions"
+    elif advocacy_score == "red":
+        count = sum(1 for a in action_scores if a.get("score", 0) < 0)
+        advocacy_reason = f"{count} anti-housing actions"
+    elif advocacy_score == "yellow":
+        advocacy_reason = "mix of pro- and anti-housing actions"
+    else:
+        advocacy_reason = "no housing-relevant actions"
+
+    # Backward-compatible position_scores
+    position_scores = []
+    for member, data in sorted(member_totals.items()):
+        net = sum(data["scores"])
+        summaries = [a["item_summary"] for a in data["actions"][:3]]
+        rubrics = [a["rubric_line"] for a in data["actions"][:3]]
+        position_scores.append({
+            "member": member,
+            "action_summary": "; ".join(summaries),
+            "score": net,
+            "rubric_cite": "; ".join(rubrics),
+        })
+
+    return advocacy_score, advocacy_reason, position_scores
+
+
+# ---------------------------------------------------------------------------
+# Main scoring flow
+# ---------------------------------------------------------------------------
+
+def score_record(record):
+    """Score a single meeting record using hybrid approach."""
+    housing_items = record.get("housing_items", [])
+    votes = record.get("votes", [])
+    positions = record.get("council_positions", [])
+
+    if not housing_items and not votes and not positions:
+        return {
+            "advocacy_score": "neutral",
+            "advocacy_reason": "no substantive content",
+            "action_scores": [],
+            "position_scores": [],
+            "ambiguities_resolved": 0,
+            "flags": [],
+        }
+
+    action_scores, flags = score_deterministic(record)
+
+    ambiguities = detect_ambiguities(record)
+    resolved = []
+    if ambiguities:
+        resolved = resolve_ambiguities(record, ambiguities)
+        action_scores.extend(resolved)
+
+    advocacy_score, advocacy_reason, position_scores = aggregate_scores(action_scores, flags)
+
+    return {
+        "advocacy_score": advocacy_score,
+        "advocacy_reason": advocacy_reason,
+        "action_scores": action_scores,
+        "position_scores": position_scores,
+        "ambiguities_resolved": len(resolved),
+        "flags": flags,
+    }
+
+
+# ---------------------------------------------------------------------------
+# CLI commands
+# ---------------------------------------------------------------------------
 
 def cmd_score(args):
     """Score meeting records."""
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     LOG_DIR.mkdir(parents=True, exist_ok=True)
 
-    meeting_filter = set(args.meeting) if args.meeting else None
+    meeting_filter = set(str(m) for m in args.meeting) if args.meeting else None
     records = load_records(meeting_filter)
 
     if not records:
@@ -223,7 +717,7 @@ def cmd_score(args):
         return
 
     existing = {} if args.force else load_existing_scores()
-    to_score = [r for r in records if r.get("meeting_id") not in existing]
+    to_score = [r for r in records if str(r.get("meeting_id", "")) not in existing]
 
     if not to_score:
         print(f"All {len(records)} records already scored. Use --force to re-score.")
@@ -234,9 +728,10 @@ def cmd_score(args):
     scored = dict(existing)
     success = 0
     failed = 0
+    total_ambiguities = 0
 
     for i, record in enumerate(to_score):
-        mid = record.get("meeting_id", "?")
+        mid = str(record.get("meeting_id", "?"))
         body = record.get("body", "?")
         date = record.get("date", "?")
         print(f"  [{i+1}/{len(to_score)}] {mid}: {body} — {date}...", end="", flush=True)
@@ -248,31 +743,35 @@ def cmd_score(args):
                 "date": date,
                 "body": body,
                 "agency": record.get("agency", ""),
-                "advocacy_score": result.get("advocacy_score", "neutral"),
-                "advocacy_reason": result.get("advocacy_reason", ""),
-                "position_scores": result.get("position_scores", []),
+                **result,
                 "votes": record.get("votes", []),
                 "housing_items": record.get("housing_items", []),
             }
             scored[mid] = scored_record
             success += 1
+            total_ambiguities += result.get("ambiguities_resolved", 0)
 
             log_path = LOG_DIR / f"{mid}.json"
-            log_path.write_text(json.dumps({
-                "input": format_record_for_scoring(record),
-                "output": result,
-            }, indent=2))
+            log_path.write_text(json.dumps(scored_record, indent=2, default=str))
 
-            print(f" {result.get('advocacy_score', '?')}")
+            amb_tag = f" +{result['ambiguities_resolved']}llm" if result["ambiguities_resolved"] else ""
+            flag_tag = f" ⚠{len(result['flags'])}" if result.get("flags") else ""
+            print(f" {result['advocacy_score']}{amb_tag}{flag_tag}")
         else:
             failed += 1
-            print(f" FAILED")
+            print(" FAILED")
 
-    with open(SCORED_JSONL, "w") as f:
-        for r in sorted(scored.values(), key=lambda x: x.get("date", "")):
-            f.write(json.dumps(r, default=str) + "\n")
+        if args.dry_run:
+            continue
 
-    print(f"\nDone. {success} scored, {failed} failed. Total: {len(scored)} → {SCORED_JSONL}")
+    if not args.dry_run:
+        with open(SCORED_JSONL, "w") as f:
+            for r in sorted(scored.values(), key=lambda x: x.get("date", "")):
+                f.write(json.dumps(r, default=str) + "\n")
+
+    print(f"\nDone. {success} scored, {failed} failed, {total_ambiguities} LLM-resolved.")
+    if not args.dry_run:
+        print(f"Total: {len(scored)} → {SCORED_JSONL}")
 
 
 def cmd_stats(args):
@@ -284,6 +783,7 @@ def cmd_stats(args):
     scores = defaultdict(int)
     total = 0
     member_scores = defaultdict(list)
+    methods = defaultdict(int)
 
     for line in SCORED_JSONL.read_text().splitlines():
         if not line.strip():
@@ -292,6 +792,8 @@ def cmd_stats(args):
             r = json.loads(line)
             total += 1
             scores[r.get("advocacy_score", "neutral")] += 1
+            for a in r.get("action_scores", []):
+                methods[a.get("method", "unknown")] += 1
             for ps in r.get("position_scores", []):
                 member_scores[ps["member"]].append(ps.get("score", 0))
         except Exception:
@@ -303,21 +805,28 @@ def cmd_stats(args):
         bar = "█" * (scores[score] // 2) if scores[score] > 0 else ""
         print(f"  {score:8s}: {scores[score]:4d} {bar}")
 
+    if methods:
+        print(f"\nScoring methods:")
+        for method, count in sorted(methods.items()):
+            print(f"  {method:15s}: {count}")
+
     if member_scores:
         print(f"\nMember net scores (top 10):")
         ranked = sorted(member_scores.items(), key=lambda x: sum(x[1]), reverse=True)
-        for member, action_scores in ranked[:10]:
-            net = sum(action_scores)
-            count = len(action_scores)
-            print(f"  {member:25s}: net {net:+4d} ({count} actions)")
+        for member, action_scores_list in ranked[:10]:
+            net = sum(action_scores_list)
+            count = len(action_scores_list)
+            grade = "A" if net >= 10 else "B" if net >= 5 else "C" if net >= 0 else "D" if net >= -9 else "F"
+            print(f"  {member:25s}: {grade} net {net:+4d} ({count} actions)")
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Score meeting records with policy-informed analysis")
+    parser = argparse.ArgumentParser(description="Score meeting records with hybrid deterministic + LLM analysis")
     parser.add_argument("--force", action="store_true", help="Re-score all records")
     parser.add_argument("--meeting", nargs="+", help="Score specific meeting(s) by ID")
     parser.add_argument("--stats", action="store_true", help="Show scoring statistics")
     parser.add_argument("--mode", choices=["local", "api"], default="local", help="LLM mode")
+    parser.add_argument("--dry-run", action="store_true", help="Show scores without writing output")
 
     args = parser.parse_args()
 
