@@ -201,10 +201,9 @@ def format_records_for_prompt(records):
         if r.get("procedural_only"):
             continue
         lines = [f"### {r.get('date', r.get('month', '?'))} — {r.get('doc_type', 'monthly digest')}"]
-        if r.get("advocacy_score"):
-            lines.append(f"Score: {r['advocacy_score']} — {r.get('advocacy_reason', '')}")
-        if r.get("advocacy_summary") and isinstance(r["advocacy_summary"], str):
-            lines.append(f"Summary: {r['advocacy_summary'][:500]}")
+        if r.get("activity_summary"):
+            act = r["activity_summary"]
+            lines.append(f"Activity: {act.get('total_votes', 0)} votes, {act.get('total_housing_items', 0)} housing items, {act.get('total_legal_flags', 0)} legal flags")
         for v in r.get("votes", []):
             if not _filter_vote(v):
                 continue
@@ -231,7 +230,8 @@ def format_records_for_prompt(records):
         for flag in r.get("legal_flags", []):
             lines.append(f"LEGAL: {flag}")
         for cp in r.get("council_positions", []):
-            lines.append(f"POSITION: {cp['member']} — {cp['stance']}: {cp.get('evidence', '')}")
+            label = cp.get('action') or cp.get('stance', 'unknown')
+            lines.append(f"POSITION: {cp['member']} — {label}: {cp.get('evidence', '')}")
         for q in r.get("key_quotes", []):
             lines.append(f"QUOTE: {q}")
         if len(lines) > 1:

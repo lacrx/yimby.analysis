@@ -394,7 +394,8 @@ def format_records_for_prompt(records, member_info):
                     vote_line += f" (no: {', '.join(v['no'])})"
                 lines.append(vote_line)
             for cp in r.get("council_positions", []):
-                lines.append(f"POSITION: {cp['member']} — {cp['stance']}: {cp.get('evidence', '')}")
+                label = cp.get('action') or cp.get('stance', 'unknown')
+                lines.append(f"POSITION: {cp['member']} — {label}: {cp.get('evidence', '')}")
             for h in r.get("housing_items", []):
                 h_line = f"HOUSING: [{h.get('type', '?')}] {h['description']}"
                 if h.get("outcome"):
