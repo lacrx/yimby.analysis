@@ -1,0 +1,44 @@
+# Jurisdiction-specific configuration for analysis scripts.
+# Copy this to config.local.yaml and fill in your values.
+# Production deployments read from AWS SSM Parameter Store instead.
+#
+# This file shares config keys with yimby.watchdog — if you've already
+# set up watchdog's config.local.yaml, copy the relevant sections here.
+
+identity:
+  org_name: "Your Org Name"
+  region_label: "Your Region, ST"          # e.g., "North San Diego County, CA"
+  state: "Your State"                       # e.g., "California"
+  primary_city: "Your City"                 # e.g., "Oceanside"
+  primary_city_slug: "your-city"            # lowercase, used as key prefix
+
+advocacy:
+  lens: "YIMBY + Strong Towns"              # your analytical framework
+  advocate_role: "housing advocate"          # role used in LLM prompts
+
+# Officials to track for leadership profiling and grading.
+figures:
+  known_figures:
+    doe:
+      full_name: "Jane Doe"
+      title: "Mayor"
+      terms: "2022–present"
+      agency_group: "your-city-council"
+      aliases: ["doe", "mayor doe", "jane doe"]
+    # Add more officials...
+
+  agency_group_labels:
+    your-city-council: "Your City Council"
+    your-city-planning: "Your City Planning Commission"
+
+# Keywords used to filter relevant meeting records
+analysis:
+  relevance_keywords:
+    - "housing"
+    - "affordable"
+    - "density"
+    - "zoning"
+    - "transit"
+    - "parking"
+    - "budget"
+    # Add jurisdiction-specific terms
