@@ -12,11 +12,15 @@ precedents, and policy developments.
 """
 
 import json
+import sys
 from collections import defaultdict
 from datetime import datetime, timedelta
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO_ROOT))
+import config
+
 DATA_DIR = REPO_ROOT / "data"
 INTEL_DIR = DATA_DIR / "intel"
 SKILL_DIR = REPO_ROOT / ".claude" / "skills" / "ca-housing-law"
@@ -93,8 +97,9 @@ def generate_supplement(hits):
         "",
     ]
 
+    _city = config.get("identity/primary_city", "Local")
     section_names = {
-        "oceanside": "Oceanside Direct Mentions",
+        "oceanside": f"{_city} Direct Mentions",
         "enforcement": "Enforcement Actions & Litigation",
         "case_law": "New Case Law & Precedents",
         "sb79": "SB 79 / Transit Density Developments",

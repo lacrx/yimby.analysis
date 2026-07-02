@@ -26,6 +26,8 @@ if ENV_FILE.exists():
             os.environ.setdefault(k.strip(), v.strip())
 
 from civic_utils import claude_local_call, all_meetings_dirs, watchdog_data_dir, load_scored_records
+sys.path.insert(0, str(REPO_ROOT))
+import config
 
 WATCHDOG_DATA = watchdog_data_dir()
 SUMMARIES_DIR = WATCHDOG_DATA / "summaries"
@@ -162,24 +164,25 @@ def load_monthly_by_year():
     return by_year
 
 
-RELEVANCE_KEYWORDS = {
+_DEFAULT_RELEVANCE_KEYWORDS = {
     "housing", "affordable", "cdbg", "home program", "inclusionary",
     "density", "zoning", "rezoning", "upzone", "land use", "general plan",
     "development", "permit", "entitlement", "subdivision",
     "infrastructure", "capital improvement", "cip", "sewer capacity", "water capacity",
-    "transit", "bus", "sprinter", "coaster", "active transport",
+    "transit", "bus", "active transport",
     "sidewalk", "bicycle", "pedestrian", "bike lane", "complete street",
     "parking", "impact fee", "development fee",
     "bond", "measure", "tax increment", "tif",
     "tenant", "rent", "eviction", "relocation", "displacement",
-    "rhna", "sb 9", "sb 10", "sb 35", "sb 330", "sb 79", "had",
+    "rhna",
     "vacancy", "blight", "code enforcement",
-    "downtown", "el corazon", "coast highway", "san luis rey",
 }
+_config_keywords = config.get("analysis/relevance_keywords", [])
+RELEVANCE_KEYWORDS = set(_config_keywords) if _config_keywords else _DEFAULT_RELEVANCE_KEYWORDS
 
 
 def _is_relevant(text):
-    """Check if text contains YIMBY/Strong Towns relevant keywords."""
+    """Check if text contains relevant policy keywords."""
     lower = text.lower()
     return any(kw in lower for kw in RELEVANCE_KEYWORDS)
 
@@ -196,7 +199,7 @@ def _filter_fiscal(fiscal):
 
 
 def format_records_for_prompt(records, scored_data=None):
-    """Format JSONL records as compact text for Claude, filtered to YIMBY/Strong Towns relevance.
+    """Format JSONL records as compact text for Claude, filtered to policy relevance.
 
     When scored_data is provided, annotates records with pre-computed advocacy scores.
     """
@@ -291,7 +294,10 @@ def summarize_month_chunk(chunk, year):
 
     label = months[0] if len(months) == 1 else f"{months[0]} to {months[-1]}"
 
-    prompt = f"""You are analyzing local government meeting records from Oceanside, CA for a housing advocate.
+    _city = config.get("identity/primary_city", "the jurisdiction")
+    _state = config.get("identity/state", "")
+    _advocate_role = config.get("advocacy/advocate_role", "housing advocate")
+    prompt = f"""You are analyzing local government meeting records from {_city}, {_state} for a {_advocate_role}.
 
 Period: {label}
 Bodies active: {', '.join(bodies)}
@@ -366,7 +372,10 @@ def summarize_body_year(body, year, summaries, source="prose"):
     if len(text) > 150000:
         text = text[:150000] + "\n[...truncated...]"
 
-    prompt = f"""You are analyzing local government meeting {'records' if source == 'jsonl' else 'summaries'} from Oceanside, CA for a housing advocate.
+    _city = config.get("identity/primary_city", "the jurisdiction")
+    _state = config.get("identity/state", "")
+    _advocate_role = config.get("advocacy/advocate_role", "housing advocate")
+    prompt = f"""You are analyzing local government meeting {'records' if source == 'jsonl' else 'summaries'} from {_city}, {_state} for a {_advocate_role}.
 
 Body: {body}
 Year: {year}
@@ -405,7 +414,10 @@ def combine_year_summary(year, body_summaries):
         f"## {body}\n{summary}" for body, summary in body_summaries.items()
     )
 
-    prompt = f"""You are writing an executive summary of Oceanside, CA city governance for {year}, for a housing advocate.
+    _city = config.get("identity/primary_city", "the jurisdiction")
+    _state = config.get("identity/state", "")
+    _advocate_role = config.get("advocacy/advocate_role", "housing advocate")
+    prompt = f"""You are writing an executive summary of {_city}, {_state} city governance for {year}, for a {_advocate_role}.
 
 Below are summaries of government activity for the year. Synthesize into a single cohesive executive summary that:
 
@@ -442,7 +454,11 @@ def create_overall_summary(year_summaries):
         f"# {year}\n{summary}" for year, summary in sorted(year_summaries.items())
     )
 
-    prompt = f"""You are writing a comprehensive executive summary covering Oceanside, CA city governance from 2020 through 2026, the tenure of Mayor Esther Sanchez (took office December 2020). This is for a housing advocate.
+    _city = config.get("identity/primary_city", "the jurisdiction")
+    _state = config.get("identity/state", "")
+    _advocate_role = config.get("advocacy/advocate_role", "housing advocate")
+    years_covered = sorted(year_summaries.keys())
+    prompt = f"""You are writing a comprehensive executive summary covering {_city}, {_state} city governance from {years_covered[0]} through {years_covered[-1]}. This is for a {_advocate_role}.
 
 Below are executive summaries for each year. Synthesize into a single narrative:
 
@@ -553,7 +569,7 @@ def main():
             year_summaries[year] = year_exec
 
             outfile = OUTPUT_DIR / f"executive-summary-{label}.md"
-            outfile.write_text(f"# Oceanside, CA — Executive Summary {label}\n\n{year_exec}\n")
+            outfile.write_text(f"# {config.get('identity/primary_city', 'City')}, {config.get('identity/state', '')} — Executive Summary {label}\n\n{year_exec}\n")
             print(f"  Saved: {outfile} ({outfile.stat().st_size:,} bytes)")
 
     else:
@@ -597,7 +613,7 @@ def main():
             year_summaries[year] = year_exec
 
             outfile = OUTPUT_DIR / f"executive-summary-{label}.md"
-            outfile.write_text(f"# Oceanside, CA — Executive Summary {label}\n\n{year_exec}\n")
+            outfile.write_text(f"# {config.get('identity/primary_city', 'City')}, {config.get('identity/state', '')} — Executive Summary {label}\n\n{year_exec}\n")
             print(f"  Saved: {outfile}")
 
     # Overall summary
@@ -615,7 +631,7 @@ def main():
     print(f"{'='*60}")
     overall = create_overall_summary(year_summaries)
     overall_file.write_text(
-        f"# Oceanside, CA — Executive Summary: The Sanchez Era (2020–2026)\n\n{overall}\n"
+        f"# {config.get('identity/primary_city', 'City')}, {config.get('identity/state', '')} — Comprehensive Executive Summary\n\n{overall}\n"
     )
     print(f"Saved: {overall_file} ({overall_file.stat().st_size:,} bytes)")
     print("\nDone.")

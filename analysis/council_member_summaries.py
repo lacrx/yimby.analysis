@@ -28,6 +28,8 @@ if ENV_FILE.exists():
             os.environ.setdefault(k.strip(), v.strip())
 
 from civic_utils import claude_local_call, all_meetings_dirs, watchdog_data_dir, load_scored_records
+sys.path.insert(0, str(REPO_ROOT))
+import config
 
 WATCHDOG_DATA = watchdog_data_dir()
 STRUCTURED_DIR = WATCHDOG_DATA / "structured"
@@ -70,77 +72,13 @@ def call_claude(prompt, max_tokens=4000):
         )
         return response.content[0].text
 
+_primary_slug = config.get("identity/primary_city_slug", "")
+_council_group = f"{_primary_slug}-council"
+_planning_group = f"{_primary_slug}-planning"
+_all_figures = config.get("figures/known_figures", {})
 COUNCIL_MEMBERS = {
-    "Sanchez": {
-        "full_name": "Esther Sanchez",
-        "title": "Mayor",
-        "terms": "Council Member 2012–2020, Mayor 2020–present",
-        "aliases": ["sanchez", "mayor sanchez", "council member sanchez",
-                    "councilmember sanchez", "mayor esther sanchez"],
-    },
-    "Weiss": {
-        "full_name": "Ryan Weiss",
-        "title": "Council Member",
-        "terms": "2018–present",
-        "aliases": ["weiss", "council member weiss", "councilmember weiss"],
-    },
-    "Joyce": {
-        "full_name": "Eric Joyce",
-        "title": "Council Member / Deputy Mayor",
-        "terms": "2022–present",
-        "aliases": ["joyce", "council member joyce", "councilmember joyce",
-                    "deputy mayor joyce", "board member joyce"],
-    },
-    "Robinson": {
-        "full_name": "Rick Robinson",
-        "title": "Council Member",
-        "terms": "2024–present",
-        "aliases": ["robinson", "council member robinson", "councilmember robinson"],
-    },
-    "Figueroa": {
-        "full_name": "Jaime \"Jimmy\" Figueroa",
-        "title": "Council Member, District 3",
-        "terms": "2024–present",
-        "aliases": ["figueroa", "council member figueroa", "councilmember figueroa",
-                    "jimmy figueroa", "jaime figueroa"],
-    },
-    "Rodriguez": {
-        "full_name": "Christopher Rodriguez",
-        "title": "Council Member",
-        "terms": "2020–2024",
-        "aliases": ["rodriguez", "council member rodriguez", "councilmember rodriguez"],
-    },
-    "Keim": {
-        "full_name": "Peter Keim",
-        "title": "Council Member / Former Mayor",
-        "terms": "Mayor 2012–2016, Council Member various terms",
-        "aliases": ["keim", "council member keim", "councilmember keim", "mayor keim"],
-    },
-    "Feller": {
-        "full_name": "Jack Feller",
-        "title": "Council Member",
-        "terms": "2014–2022",
-        "aliases": ["feller", "council member feller", "councilmember feller",
-                    "mayor feller", "deputy mayor feller"],
-    },
-    "Tyson": {
-        "full_name": "Kori Tyson",
-        "title": "Council Member",
-        "terms": "2020–2022",
-        "aliases": ["tyson", "council member tyson", "councilmember tyson"],
-    },
-    "Jensen": {
-        "full_name": "Jensen",
-        "title": "Council Member",
-        "terms": "Unknown — appears in 2020–2022 era records",
-        "aliases": ["jensen", "council member jensen", "councilmember jensen"],
-    },
-    "EGonzalez": {
-        "full_name": "Emily Gonzalez",
-        "title": "Planning Commissioner",
-        "terms": "Appointed 2025, term through April 15, 2029",
-        "aliases": ["emily gonzalez", "commissioner gonzalez"],
-    },
+    slug: info for slug, info in _all_figures.items()
+    if info.get("agency_group") in (_council_group, _planning_group)
 }
 
 
@@ -361,7 +299,10 @@ def summarize_member(member_key, member_info, mentions_by_year, source="prose", 
         grade = "A" if net_score >= 10 else "B" if net_score >= 5 else "C" if net_score >= 0 else "D" if net_score >= -9 else "F"
         score_header = f"\n**Pre-computed net score:** {net_score:+d} ({action_count} scored actions) → Grade: {grade}\nScores are pre-computed using the ACTIONS OVER WORDS rubric. Use these scores as the basis for your grade — do NOT re-derive scores. Focus your analysis on narrative synthesis: vote patterns, alliances, evolution over time, and strategic implications.\n"
 
-    prompt = f"""You are analyzing the record of an Oceanside, CA elected official from the perspective of a housing advocate.
+    _city = config.get("identity/primary_city", "the jurisdiction")
+    _state = config.get("identity/state", "")
+    _advocate_role = config.get("advocacy/advocate_role", "housing advocate")
+    prompt = f"""You are analyzing the record of a {_city}, {_state} elected official from the perspective of a {_advocate_role}.
 
 **Official:** {member_info['full_name']}
 **Title:** {member_info['title']}
@@ -453,7 +394,12 @@ def create_comparative_summary(member_summaries):
     if len(combined) > 180000:
         combined = combined[:180000] + "\n[...truncated...]"
 
-    prompt = f"""You are writing a comparative analysis of Oceanside, CA council members for a housing advocate.
+    _city = config.get("identity/primary_city", "the jurisdiction")
+    _state = config.get("identity/state", "")
+    _advocate_role = config.get("advocacy/advocate_role", "housing advocate")
+    _group_labels = config.get("figures/agency_group_labels", {})
+    _council_label = _group_labels.get(f"{config.get('identity/primary_city_slug', '')}-council", f"{_city} City Council")
+    prompt = f"""You are writing a comparative analysis of {_council_label} members for a {_advocate_role}.
 
 Below are individual profiles of each council member graded on housing advocacy using an ACTIONS-BASED framework grounded in housing economics research (National Zoning Atlas, UCLA Housing Voice, NYU Furman Center supply skepticism research).
 
@@ -551,8 +497,10 @@ def main():
         print(f"{'='*60}")
         comparative = create_comparative_summary(member_summaries)
         outfile = OUTPUT_DIR / "comparative-analysis.md"
+        _group_labels = config.get("figures/agency_group_labels", {})
+        _council_label = _group_labels.get(f"{config.get('identity/primary_city_slug', '')}-council", "City Council")
         outfile.write_text(
-            f"# Oceanside City Council — Housing Advocacy Comparative Analysis\n\n{comparative}\n"
+            f"# {_council_label} — Housing Advocacy Comparative Analysis\n\n{comparative}\n"
         )
         print(f"Saved: {outfile}")
 

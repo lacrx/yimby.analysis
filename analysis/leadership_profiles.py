@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """Generate leadership profiles graded on housing advocacy.
 
-Auto-discovers named figures from meeting data. Hardcoded entries for
-Oceanside council (rich alias resolution); auto-discovered for regional
-agencies above mention threshold.
+Known figures loaded from config (SSM or config.local.yaml);
+auto-discovered for regional agencies above mention threshold.
 
 Change detection via content-hash — only regenerates profiles when
 underlying meeting data changes.
@@ -36,6 +35,8 @@ if ENV_FILE.exists():
             os.environ.setdefault(k.strip(), v.strip())
 
 from civic_utils import claude_local_call, watchdog_data_dir, load_scored_records
+sys.path.insert(0, str(REPO_ROOT))
+import config
 
 WATCHDOG_DATA = watchdog_data_dir()
 STRUCTURED_DIR = WATCHDOG_DATA / "structured"
@@ -52,175 +53,8 @@ client = None
 # Minimum mentions to auto-generate a profile
 AUTO_THRESHOLD = 50
 
-# ── Known figures with alias resolution ──
-# key: slug used for filename
-# agency_group: used for per-agency comparative analysis
-
-KNOWN_FIGURES = {
-    # ── Oceanside City Council ──
-    "sanchez": {
-        "full_name": "Esther Sanchez",
-        "title": "Mayor",
-        "terms": "Council Member 2012–2020, Mayor 2020–present",
-        "agency_group": "oceanside-council",
-        "aliases": ["sanchez", "mayor sanchez", "council member sanchez",
-                    "councilmember sanchez", "mayor esther sanchez", "esther sanchez"],
-    },
-    "weiss": {
-        "full_name": "Ryan Weiss",
-        "title": "Council Member",
-        "terms": "2018–present",
-        "agency_group": "oceanside-council",
-        "aliases": ["weiss", "council member weiss", "councilmember weiss",
-                    "ryan weiss", "peter weiss"],
-    },
-    "joyce": {
-        "full_name": "Eric Joyce",
-        "title": "Council Member / Deputy Mayor",
-        "terms": "2022–present",
-        "agency_group": "oceanside-council",
-        "aliases": ["joyce", "council member joyce", "councilmember joyce",
-                    "deputy mayor joyce", "board member joyce", "eric joyce"],
-    },
-    "robinson": {
-        "full_name": "Rick Robinson",
-        "title": "Council Member",
-        "terms": "2024–present",
-        "agency_group": "oceanside-council",
-        "aliases": ["robinson", "council member robinson", "councilmember robinson",
-                    "rick robinson"],
-    },
-    "figueroa": {
-        "full_name": "Jaime \"Jimmy\" Figueroa",
-        "title": "Council Member, District 3",
-        "terms": "2024–present",
-        "agency_group": "oceanside-council",
-        "aliases": ["figueroa", "council member figueroa", "councilmember figueroa",
-                    "jimmy figueroa", "jaime figueroa"],
-    },
-    "rodriguez": {
-        "full_name": "Christopher Rodriguez",
-        "title": "Former Council Member",
-        "terms": "2020–2024",
-        "agency_group": "oceanside-council",
-        "aliases": ["rodriguez", "council member rodriguez", "councilmember rodriguez",
-                    "christopher rodriguez"],
-    },
-    "keim": {
-        "full_name": "Peter Keim",
-        "title": "Former Council Member / Mayor",
-        "terms": "Mayor 2012–2016, Council Member various terms",
-        "agency_group": "oceanside-council",
-        "aliases": ["keim", "council member keim", "councilmember keim", "mayor keim",
-                    "peter keim", "ryan keim"],
-    },
-    "feller": {
-        "full_name": "Jack Feller",
-        "title": "Former Council Member",
-        "terms": "2014–2022",
-        "agency_group": "oceanside-council",
-        "aliases": ["feller", "council member feller", "councilmember feller",
-                    "mayor feller", "deputy mayor feller", "jack feller"],
-    },
-    "tyson": {
-        "full_name": "Kori Tyson",
-        "title": "Former Council Member",
-        "terms": "2020–2022",
-        "agency_group": "oceanside-council",
-        "aliases": ["tyson", "council member tyson", "councilmember tyson",
-                    "kori tyson"],
-    },
-    "jensen": {
-        "full_name": "Jensen",
-        "title": "Former Council Member",
-        "terms": "Appears in 2020–2022 era records",
-        "agency_group": "oceanside-council",
-        "aliases": ["jensen", "council member jensen", "councilmember jensen",
-                    "kori jensen"],
-    },
-    "egonzalez": {
-        "full_name": "Emily Gonzalez",
-        "title": "Planning Commissioner",
-        "terms": "Appointed 2025, term through April 15, 2029",
-        "agency_group": "oceanside-planning",
-        "aliases": ["emily gonzalez", "commissioner gonzalez"],
-    },
-    # ── Oceanside Planning Commission ──
-    "raetz": {
-        "full_name": "Patricia Raetz",
-        "title": "Planning Commissioner",
-        "terms": "Active in records",
-        "agency_group": "oceanside-planning",
-        "aliases": ["raetz", "patricia raetz", "pat raetz", "commissioner raetz"],
-    },
-    "vey": {
-        "full_name": "Darin Vey",
-        "title": "Planning Commissioner",
-        "terms": "Active in records",
-        "agency_group": "oceanside-planning",
-        "aliases": ["vey", "darin vey", "commissioner vey"],
-    },
-    "balma": {
-        "full_name": "Louise Balma",
-        "title": "Planning Commissioner",
-        "terms": "Active in records",
-        "agency_group": "oceanside-planning",
-        "aliases": ["balma", "louise balma", "commissioner balma"],
-    },
-    # ── SD County Board of Supervisors ──
-    "desmond": {
-        "full_name": "Jim Desmond",
-        "title": "County Supervisor, District 5",
-        "terms": "2019–present",
-        "agency_group": "sd-county",
-        "aliases": ["desmond", "jim desmond", "supervisor desmond",
-                    "chair desmond", "chairman desmond"],
-    },
-    "lawson-remer": {
-        "full_name": "Terra Lawson-Remer",
-        "title": "County Supervisor, District 3",
-        "terms": "2021–present",
-        "agency_group": "sd-county",
-        "aliases": ["lawson-remer", "terra lawson-remer", "supervisor lawson-remer"],
-    },
-    "anderson": {
-        "full_name": "Joel Anderson",
-        "title": "County Supervisor, District 2",
-        "terms": "2021–present",
-        "agency_group": "sd-county",
-        "aliases": ["anderson", "joel anderson", "supervisor anderson"],
-    },
-    "vargas": {
-        "full_name": "Nora Vargas",
-        "title": "County Supervisor, District 1",
-        "terms": "2021–present",
-        "agency_group": "sd-county",
-        "aliases": ["vargas", "nora vargas", "supervisor vargas",
-                    "chair vargas", "chairwoman vargas"],
-    },
-    "montgomery-steppe": {
-        "full_name": "Monica Montgomery Steppe",
-        "title": "County Supervisor, District 4",
-        "terms": "2023–present",
-        "agency_group": "sd-county",
-        "aliases": ["montgomery steppe", "monica montgomery steppe",
-                    "supervisor montgomery steppe"],
-    },
-    "fletcher": {
-        "full_name": "Nathan Fletcher",
-        "title": "Former County Supervisor, District 4",
-        "terms": "2019–2023",
-        "agency_group": "sd-county",
-        "aliases": ["fletcher", "nathan fletcher", "supervisor fletcher",
-                    "chair fletcher", "chairman fletcher"],
-    },
-}
-
-AGENCY_GROUP_LABELS = {
-    "oceanside-council": "Oceanside City Council",
-    "oceanside-planning": "Oceanside Planning Commission",
-    "sd-county": "San Diego County Board of Supervisors",
-}
+KNOWN_FIGURES = config.get("figures/known_figures", {})
+AGENCY_GROUP_LABELS = config.get("figures/agency_group_labels", {})
 
 
 def load_skills():
@@ -444,25 +278,29 @@ def generate_profile(slug, info, records, scored_data=None):
     if len(text) > 180000:
         text = text[:180000] + "\n[...truncated...]"
 
+    _city = config.get("identity/primary_city", "the jurisdiction")
+    _region = config.get("identity/region_label", "the region")
+
     role_context = ""
     group = info.get("agency_group", "")
+    group_label = AGENCY_GROUP_LABELS.get(group, group)
     if "county" in group:
-        role_context = """This official serves on the San Diego County Board of Supervisors.
+        role_context = f"""This official serves on the {group_label}.
 County-level housing actions include: regional housing mandates (RHNA allocation),
 unincorporated area zoning, affordable housing trust fund allocations, farmworker housing,
 homelessness programs, and votes on state housing law compliance. Grade using the same
 housing advocacy framework but at the county/regional scale.
 
-IMPORTANT: Weigh actions by how directly they affect housing outcomes in Oceanside and
-North County. Votes on RHNA allocations, regional transit, and county housing programs
-that flow to Oceanside matter more than actions on South County or East County issues."""
+IMPORTANT: Weigh actions by how directly they affect housing outcomes in {_city} and
+the surrounding region. Votes on RHNA allocations, regional transit, and county housing programs
+that flow to {_city} matter more than actions in distant parts of the county."""
     elif "planning" in group:
-        role_context = """This official serves on the Oceanside Planning Commission.
+        role_context = f"""This official serves on the {group_label}.
 Planning commissioners make recommendations on project approvals, zoning changes,
 specific plans, and environmental review. Their votes directly shape which housing
 projects advance to council. Grade using the same housing advocacy framework.
 
-These votes have maximum direct impact on Oceanside housing outcomes."""
+These votes have maximum direct impact on {_city} housing outcomes."""
 
     score_header = ""
     if scored_data and action_count > 0:
@@ -478,7 +316,9 @@ These scores were computed deterministically from voting records using the rubri
 Use these scores as your baseline. Do NOT re-derive scores from scratch — validate against
 the MEMBER SCORE annotations in the meeting data and adjust only if you find clear errors."""
 
-    prompt = f"""You are analyzing the record of a local government official from the perspective of a housing advocate in Oceanside/North San Diego County, CA.
+    _advocate_role = config.get("advocacy/advocate_role", "housing advocate")
+    _lens = config.get("advocacy/lens", "")
+    prompt = f"""You are analyzing the record of a local government official from the perspective of a {_advocate_role} in {_city}/{_region}.
 
 **Official:** {info['full_name']}
 **Title:** {info['title']}
@@ -556,7 +396,10 @@ def generate_comparative(agency_group, label, profiles):
     if len(combined) > 180000:
         combined = combined[:180000] + "\n[...truncated...]"
 
-    prompt = f"""You are writing a comparative analysis of {label} members for a housing advocate in Oceanside/North San Diego County, CA.
+    _city = config.get("identity/primary_city", "the jurisdiction")
+    _region = config.get("identity/region_label", "the region")
+    _advocate_role = config.get("advocacy/advocate_role", "housing advocate")
+    prompt = f"""You are writing a comparative analysis of {label} members for a {_advocate_role} in {_city}/{_region}.
 
 Below are individual profiles graded on housing advocacy using an ACTIONS-BASED framework.
 
