@@ -704,6 +704,13 @@ def score_record(record):
 # CLI commands
 # ---------------------------------------------------------------------------
 
+def _write_scored_jsonl(scored):
+    """Write all scored records to JSONL, sorted by date."""
+    with open(SCORED_JSONL, "w") as f:
+        for r in sorted(scored.values(), key=lambda x: x.get("date", "")):
+            f.write(json.dumps(r, default=str) + "\n")
+
+
 def cmd_score(args):
     """Score meeting records."""
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -764,10 +771,12 @@ def cmd_score(args):
         if args.dry_run:
             continue
 
+        if (i + 1) % 50 == 0:
+            _write_scored_jsonl(scored)
+            print(f"  [checkpoint: {len(scored)} records saved]")
+
     if not args.dry_run:
-        with open(SCORED_JSONL, "w") as f:
-            for r in sorted(scored.values(), key=lambda x: x.get("date", "")):
-                f.write(json.dumps(r, default=str) + "\n")
+        _write_scored_jsonl(scored)
 
     print(f"\nDone. {success} scored, {failed} failed, {total_ambiguities} LLM-resolved.")
     if not args.dry_run:
