@@ -50,6 +50,35 @@ HOUSING_PROJECT_TYPES = {
     "R DEVELOPMENT PLAN",
 }
 
+# Development Plans filed for non-housing uses (car washes, infrastructure, etc.)
+_NON_HOUSING_RE = re.compile(
+    r"CAR\s*WASH|FIRE\s+STATION|WAREHOUSE|CHICK-FIL-A|POPEYE|STARBUCKS|"
+    r"DRIVE.?THRU|SHELL\s+INDUSTRIAL|MARKET\s+EXPANSION|VACUUM|"
+    r"SOLAR(?!\s*MIXED)|CHURCH|FELLOWSHIP|WATER\s+UTIL|PURIF|PUMP\s+STATION|"
+    r"FIBER\s+NETWORK|\bPIER\b|BRIDGE|DECOMMISSION|CAMPUS\s+EXPANSION|"
+    r"WETLANDS|RECYC|VERTIPORT|WALMART|MEDICAL\s+OFFICE|TRAINING\s+FACILITY|"
+    r"PARKING\s+LOT|OPERATIONS\s+CENTER|EV\s+CHARGING|PADEL|GAS\s+STATION|"
+    r"SHELL\s+SERVICE",
+    re.IGNORECASE,
+)
+_HOUSING_FILTER_RE = re.compile(
+    r"UNIT|APT|CONDO|HOME|DUPLEX|TRIPLEX|TOWNHOME|TOWN\s*HOME|"
+    r"RESIDENTIAL|HOUSING|MIXED.USE|DENSITY\s+BONUS|SB\s*330|"
+    r"AFFORD|SUBDIVISION|TRACT|\bLOT\b",
+    re.IGNORECASE,
+)
+
+
+def is_housing_project(project):
+    """Filter out non-housing Development Plans (car washes, infrastructure)."""
+    if project.get("type", "") != "DEVELOPMENT PLAN":
+        return True
+    desc = (project.get("description", "") or "").strip()
+    if not desc:
+        return True
+    return not _NON_HOUSING_RE.search(desc) or _HOUSING_FILTER_RE.search(desc)
+
+
 KEY_EVENTS = [
     (2022, "Downtown proposals surge to 34% — SB 330 + density bonus pipeline"),
     (2023, "Downtown peaks at 54% share of citywide proposals"),
@@ -225,6 +254,8 @@ def estimate_year(year, zoning, all_permits, all_projects):
     for p in all_projects:
         if p.get("type", "") not in HOUSING_PROJECT_TYPES:
             continue
+        if not is_housing_project(p):
+            continue
         if normalize_year(p.get("applied", "")) != yr_s:
             continue
         apn = p.get("apn", "")
@@ -310,6 +341,8 @@ def compute_calibration(apr_data, zoning, all_permits, all_projects):
         plan_dt = 0
         for p in all_projects:
             if p.get("type", "") not in HOUSING_PROJECT_TYPES:
+                continue
+            if not is_housing_project(p):
                 continue
             if normalize_year(p.get("applied", "")) != yr_s:
                 continue
