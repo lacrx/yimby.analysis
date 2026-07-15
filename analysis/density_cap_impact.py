@@ -236,6 +236,31 @@ def analyze_apr_year(year, apr_records, zoning):
     }
 
 
+def _build_apn_permit_index(all_permits):
+    """Index housing permits by APN for cross-referencing with projects."""
+    idx = {}
+    for p in all_permits:
+        if p.get("type", "") not in RESIDENTIAL_PERMIT_TYPES:
+            continue
+        apn = str(p.get("apn", "")).replace("-", "") if p.get("apn") else ""
+        if apn:
+            idx.setdefault(apn, []).append(p)
+    return idx
+
+
+def _project_units_via_permits(apn, apn_index):
+    """Look up unit count from housing permits at same APN."""
+    permits = apn_index.get(apn, [])
+    if not permits:
+        return 0
+    best = 0
+    for p in permits:
+        u = extract_units(p.get("description", ""))
+        if u > best:
+            best = u
+    return best
+
+
 def estimate_year(year, zoning, all_permits, all_projects):
     today = datetime.date.today()
     if year < today.year:
@@ -247,6 +272,7 @@ def estimate_year(year, zoning, all_permits, all_projects):
         year_frac = max(days / 365, 0.01)
 
     yr_s = str(year)
+    apn_index = _build_apn_permit_index(all_permits)
 
     # Downtown: planning applications
     dt_plan_units = 0
@@ -262,6 +288,8 @@ def estimate_year(year, zoning, all_permits, all_projects):
         if not is_downtown(apn, zoning):
             continue
         u = extract_units(p.get("name", "") or p.get("description", ""))
+        if u == 0 and apn:
+            u = _project_units_via_permits(str(apn).replace("-", ""), apn_index)
         dt_plan_units += u
         if apn:
             dt_plan_apns.add(str(apn).replace("-", ""))
@@ -338,6 +366,7 @@ def compute_calibration(apr_data, zoning, all_permits, all_projects):
                       if r.get("year") == yr_s and not is_downtown(r.get("apn"), zoning))
 
         # Planning units downtown
+        apn_index = _build_apn_permit_index(all_permits)
         plan_dt = 0
         for p in all_projects:
             if p.get("type", "") not in HOUSING_PROJECT_TYPES:
@@ -346,9 +375,13 @@ def compute_calibration(apr_data, zoning, all_permits, all_projects):
                 continue
             if normalize_year(p.get("applied", "")) != yr_s:
                 continue
-            if not is_downtown(p.get("apn", ""), zoning):
+            apn = p.get("apn", "")
+            if not is_downtown(apn, zoning):
                 continue
-            plan_dt += extract_units(p.get("name", "") or p.get("description", ""))
+            u = extract_units(p.get("name", "") or p.get("description", ""))
+            if u == 0 and apn:
+                u = _project_units_via_permits(str(apn).replace("-", ""), apn_index)
+            plan_dt += u
 
         # Permit units non-downtown
         pmt_ndt = 0
