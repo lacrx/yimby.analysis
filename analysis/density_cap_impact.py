@@ -116,20 +116,60 @@ def normalize_year(datestr):
     return datestr[:4] if len(datestr) >= 4 else None
 
 
-UNIT_RE = re.compile(
-    r"(\d+)\s*(?:UNIT|MFDU|MF\s*UNIT|DU\b|DWELLING|APT|CONDO|TOWNHOME|HOME|SFR|SINGLE.?FAMILY|LOT)",
-    re.IGNORECASE,
-)
+_HOUSING_KW = r"(?:UNITS?|APTS?|APARTMENTS?|DUS?|MFDU|HOMES?|CONDOS?|CONDOMINIUMS?|TOWNHOMES?|TOWN\s*HOMES?|LOTS?|DWELLINGS?|ATTACHED|DETACH(?:ED)?|STUDIOS?|SFH|SFR)"
+_ADDR_AFTER = re.compile(r"\s+(?:[NSEW]\.?\s|S\.|N\.|MISSION|PACIFIC|COAST|TREMONT|MYERS|CLEVELAND|FREEMAN|PIER)", re.IGNORECASE)
+_STORY_AFTER = re.compile(r"\s*[-]?\s*STOR", re.IGNORECASE)
+_SKIP_AFTER = re.compile(r"SQ\s*F|ACRE|PARK|,\d{3}\s*SF|K\s*SQ", re.IGNORECASE)
+_WORD_NUMS = {"TWO": 2, "THREE": 3, "FOUR": 4, "FIVE": 5, "SIX": 6, "SEVEN": 7, "EIGHT": 8, "NINE": 9, "TEN": 10, "TWELVE": 12, "TWENTY": 20}
 
 
 def extract_units(description):
     if not description:
         return 0
-    m = UNIT_RE.search(description)
+    t = description.upper()
+
+    # Duplex/triplex multiplier (before generic match eats the number)
+    m = re.search(r"(\d+)\s*\)?\s*[-]?\s*DUPLEX", t)
     if m:
-        val = int(m.group(1))
-        if 1 < val < 5000:
+        return int(m.group(1)) * 2
+    m = re.search(r"(\d+)\s*\)?\s*[-]?\s*TRIPLEX", t)
+    if m:
+        return int(m.group(1)) * 3
+
+    # Direct N-UNIT pattern
+    m = re.search(rf"(\d+)\s*[-]?\s*{_HOUSING_KW}", t)
+    if m:
+        n = int(m.group(1))
+        if 0 < n < 2000:
+            return n
+
+    # Contextual: find numbers near housing keywords, skip addresses/stories
+    candidates = []
+    for m in re.finditer(r"(\d+)", t):
+        n = int(m.group(1))
+        if n < 2 or n > 2000:
+            continue
+        after = t[m.end():m.end() + 15]
+        if _ADDR_AFTER.match(after) or _STORY_AFTER.match(after) or _SKIP_AFTER.search(after):
+            continue
+        window = t[m.start():m.start() + 60]
+        if re.search(_HOUSING_KW, window):
+            candidates.append(n)
+
+    if candidates:
+        return max(candidates)
+
+    # Word numbers
+    for word, val in _WORD_NUMS.items():
+        if re.search(rf"\b{word}\b.*{_HOUSING_KW}", t):
             return val
+
+    # Standalone duplex/triplex
+    if re.search(r"\bDUPLEX(?:ES)?\b", t):
+        return 2
+    if re.search(r"\bTRIPLEX\b", t):
+        return 3
+
     return 0
 
 
