@@ -37,6 +37,18 @@ DOWNTOWN_ZONE_PREFIX = "D-"
 DOWNTOWN_PLANNING_CALIBRATION = 0.7
 NON_DOWNTOWN_PERMIT_CALIBRATION = 2.7
 
+# Oceanside max density by zone (du/acre) from Municipal Code Title 18
+# Used as fallback when project description lacks unit count
+ZONE_MAX_DENSITY = {
+    "RS": 3.6, "RS-1": 3.6, "RS-2": 3.6,
+    "RE-A": 1.0, "RE-B": 2.2,
+    "RM": 15.0, "R3": 22.0, "RH": 29.0, "RT": 29.0,
+    "D-2": 86.0, "D-3": 86.0, "D-5": 86.0, "D-7B": 86.0,
+    "D-9": 86.0, "D-15": 86.0,
+    "C2": 22.0, "CC": 22.0, "CL": 22.0, "CS-L": 22.0, "CP": 22.0,
+    "IL": 0, "OS": 0, "A": 0, "PS": 0, "PUT": 0,
+}
+
 RESIDENTIAL_PERMIT_TYPES = {
     "BLD SFD OR DUPLEX",
     "BLD ACCESSORY DWELLING",
@@ -54,11 +66,13 @@ HOUSING_PROJECT_TYPES = {
 _NON_HOUSING_RE = re.compile(
     r"CAR\s*WASH|FIRE\s+STATION|WAREHOUSE|CHICK-FIL-A|POPEYE|STARBUCKS|"
     r"DRIVE.?THRU|SHELL\s+INDUSTRIAL|MARKET\s+EXPANSION|VACUUM|"
-    r"SOLAR(?!\s*MIXED)|CHURCH|FELLOWSHIP|WATER\s+UTIL|PURIF|PUMP\s+STATION|"
+    r"SOLAR(?!\s*MIXED)|CHURCH|FELLOWSHIP|WATER\s+(?:UTIL|CIP)|PURIF|"
+    r"PUMP\s+STATION|LIFT\s+STATION|"
     r"FIBER\s+NETWORK|\bPIER\b|BRIDGE|DECOMMISSION|CAMPUS\s+EXPANSION|"
     r"WETLANDS|RECYC|VERTIPORT|WALMART|MEDICAL\s+OFFICE|TRAINING\s+FACILITY|"
     r"PARKING\s+LOT|OPERATIONS\s+CENTER|EV\s+CHARGING|PADEL|GAS\s+STATION|"
-    r"SHELL\s+SERVICE",
+    r"SHELL\s+SERVICE|PSYCHIATRIC\s+HOSPITAL|LIFEGUARD|RESTORATION\s+PROJECT|"
+    r"VOID\s+DO\s+NOT|LAGOON|HACIENDA\s+SENIOR\s+LIVING\s+PARKING",
     re.IGNORECASE,
 )
 _HOUSING_FILTER_RE = re.compile(
@@ -74,9 +88,11 @@ def is_housing_project(project):
     if project.get("type", "") != "DEVELOPMENT PLAN":
         return True
     desc = (project.get("description", "") or "").strip()
-    if not desc:
+    name = (project.get("name", "") or "").strip()
+    text = f"{desc} {name}".strip()
+    if not text:
         return True
-    return not _NON_HOUSING_RE.search(desc) or _HOUSING_FILTER_RE.search(desc)
+    return not _NON_HOUSING_RE.search(text) or _HOUSING_FILTER_RE.search(text)
 
 
 KEY_EVENTS = [
@@ -236,6 +252,73 @@ def analyze_apr_year(year, apr_records, zoning):
     }
 
 
+_DOC_UNIT_RE = re.compile(
+    r"(\d{1,4})\s{0,3}(?:dwelling |residential |apartment |rental )?units?\b",
+    re.IGNORECASE,
+)
+_doc_unit_cache = None
+_MAX_DOC_SIZE = 500_000
+
+
+def _is_year(n):
+    return 1990 <= n <= 2035
+
+
+def _build_doc_unit_index():
+    """Scan meeting documents for project numbers and extract unit counts."""
+    global _doc_unit_cache
+    if _doc_unit_cache is not None:
+        return _doc_unit_cache
+
+    docs_dir = WATCHDOG_DATA / "oceanside" / "documents"
+    if not docs_dir.exists():
+        _doc_unit_cache = {}
+        return _doc_unit_cache
+
+    idx = {}
+    pno_re = re.compile(r"\b([DR]D?\d{2}-\d{5}|DB\d{2}-\d{5})\b")
+
+    for fname in docs_dir.iterdir():
+        if fname.suffix != ".txt":
+            continue
+        if fname.stat().st_size > _MAX_DOC_SIZE:
+            continue
+        try:
+            text = fname.read_text(errors="ignore")
+        except Exception:
+            continue
+        pnos_found = set(pno_re.findall(text))
+        if not pnos_found:
+            continue
+
+        for pno in pnos_found:
+            best = _extract_units_near_project(text, pno)
+            if best and (pno not in idx or best > idx[pno]):
+                idx[pno] = best
+
+    _doc_unit_cache = idx
+    return idx
+
+
+def _extract_units_near_project(text, project_no):
+    """Find unit counts within 800 chars of a project number mention."""
+    best = 0
+    start = 0
+    while True:
+        pos = text.find(project_no, start)
+        if pos == -1:
+            break
+        window = text[max(0, pos - 200):pos + 800]
+        for m in _DOC_UNIT_RE.finditer(window):
+            n = int(m.group(1))
+            if _is_year(n):
+                continue
+            if 2 <= n <= 2000 and n > best:
+                best = n
+        start = pos + len(project_no)
+    return best
+
+
 def _build_apn_permit_index(all_permits):
     """Index housing permits by APN for cross-referencing with projects."""
     idx = {}
@@ -273,6 +356,7 @@ def estimate_year(year, zoning, all_permits, all_projects):
 
     yr_s = str(year)
     apn_index = _build_apn_permit_index(all_permits)
+    doc_units = _build_doc_unit_index()
 
     # Downtown: planning applications
     dt_plan_units = 0
@@ -290,6 +374,10 @@ def estimate_year(year, zoning, all_permits, all_projects):
         u = extract_units(p.get("name", "") or p.get("description", ""))
         if u == 0 and apn:
             u = _project_units_via_permits(str(apn).replace("-", ""), apn_index)
+        if u == 0:
+            pno = p.get("project_no", "")
+            if pno and pno in doc_units:
+                u = doc_units[pno]
         dt_plan_units += u
         if apn:
             dt_plan_apns.add(str(apn).replace("-", ""))
@@ -367,6 +455,7 @@ def compute_calibration(apr_data, zoning, all_permits, all_projects):
 
         # Planning units downtown
         apn_index = _build_apn_permit_index(all_permits)
+        doc_units = _build_doc_unit_index()
         plan_dt = 0
         for p in all_projects:
             if p.get("type", "") not in HOUSING_PROJECT_TYPES:
@@ -381,6 +470,10 @@ def compute_calibration(apr_data, zoning, all_permits, all_projects):
             u = extract_units(p.get("name", "") or p.get("description", ""))
             if u == 0 and apn:
                 u = _project_units_via_permits(str(apn).replace("-", ""), apn_index)
+            if u == 0:
+                pno = p.get("project_no", "")
+                if pno and pno in doc_units:
+                    u = doc_units[pno]
             plan_dt += u
 
         # Permit units non-downtown
