@@ -14,11 +14,9 @@ Usage:
 
 import argparse
 import datetime
-import glob
 import json
 import re
 import sys
-from collections import defaultdict
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -36,18 +34,6 @@ OUTPUT_DIR = REPO_ROOT / "output" / "density-cap"
 DOWNTOWN_ZONE_PREFIX = "D-"
 DOWNTOWN_PLANNING_CALIBRATION = 0.7
 NON_DOWNTOWN_PERMIT_CALIBRATION = 2.7
-
-# Oceanside max density by zone (du/acre) from Municipal Code Title 18
-# Used as fallback when project description lacks unit count
-ZONE_MAX_DENSITY = {
-    "RS": 3.6, "RS-1": 3.6, "RS-2": 3.6,
-    "RE-A": 1.0, "RE-B": 2.2,
-    "RM": 15.0, "R3": 22.0, "RH": 29.0, "RT": 29.0,
-    "D-2": 86.0, "D-3": 86.0, "D-5": 86.0, "D-7B": 86.0,
-    "D-9": 86.0, "D-15": 86.0,
-    "C2": 22.0, "CC": 22.0, "CL": 22.0, "CS-L": 22.0, "CP": 22.0,
-    "IL": 0, "OS": 0, "A": 0, "PS": 0, "PUT": 0,
-}
 
 RESIDENTIAL_PERMIT_TYPES = {
     "BLD SFD OR DUPLEX",
@@ -642,7 +628,6 @@ def print_year_detail(year_result):
         print(f"    DT permit units (raw):       {d['downtown_permit_units_raw']}")
         print(f"    DT calibrated (raw):         {d['downtown_calibrated_raw']}")
         print(f"    Non-DT permit units (raw):   {d['non_downtown_permit_units_raw']}")
-        print(f"    Non-DT calibrated (raw):     {d['non_downtown_calibrated_raw']}")
         print(f"    Non-DT calibrated (raw):     {d['non_downtown_calibrated_raw']}")
 
 
