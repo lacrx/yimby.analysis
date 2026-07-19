@@ -65,6 +65,33 @@ watchdog/data/structured/all-records.jsonl         →  council_member_summaries
 watchdog/data/intel/intel-*.json                   →  update_skill_intel.py
 ```
 
+**Etrakit filing data** (distinct from meeting records):
+```
+watchdog/data/oceanside/permits/etrakit-projects-{year}.jsonl  — discretionary project applications (RD, DB, CUP, etc.)
+watchdog/data/oceanside/permits/etrakit-permits-{year}.jsonl   — building permits
+```
+Each row has `project_no`, `applied` (date), `address`, `description`, `apn`, `status`. These are the authoritative source for when discretionary applications were filed — `all-records.jsonl` only captures projects after they reach a hearing body. Use etrakit files for filing volume analysis, policy impact measurement, and pipeline tracking. Etrakit does NOT capture ministerial approvals (ADUs, SB 9 lot splits, by-right small projects) — those appear only in building permits or HCD APR data.
+
+**HCD APR data**:
+```
+watchdog/data/hcd-apr-tablea.csv                               — statewide APR Table A (384K rows)
+watchdog/data/reference/hcd-apr-oceanside.json                 — Oceanside-specific APR reference
+```
+APR Table A has `APP_SUBMIT_DT`, unit counts by income category, `UNIT_CAT` (ADU/SFD/2-4/5+), and application status. Covers 2018-2025 (2026 APR due April 2027). APR captures ALL unit types including ministerial (ADUs, by-right), so totals will exceed etrakit discretionary counts. Current-year ministerial counts are unknown until APR is filed (April of following year).
+
+**Geographic boundaries**:
+```
+watchdog/data/d-district-zoning.geojson                        — official D-District (Downtown) zoning boundary
+```
+GeoJSON with 36 polygons for subdistricts D-1 through D-14. Use this for downtown geographic filtering — do NOT guess from street names. Cross-reference etrakit APNs or APR lat/lon coordinates against this boundary using shapely point-in-polygon.
+
+### Data source hierarchy for filing questions
+1. **"When was X filed?"** → etrakit `applied` date or APR `APP_SUBMIT_DT`
+2. **"How many discretionary filings?"** → etrakit-projects-{year}.jsonl (RD/DB prefixes)
+3. **"How many total units filed?"** → HCD APR Table A (includes ministerial). Current year unavailable until April next year.
+4. **"Is X in downtown?"** → d-district-zoning.geojson point-in-polygon, not street name matching
+5. **"What happened at a hearing?"** → all-records.jsonl (meeting records). Never use this to determine filing dates.
+
 Scripts read from watchdog via `config.yaml → watchdog_data`. They do NOT write back to watchdog.
 
 ## LLM Call Modes
