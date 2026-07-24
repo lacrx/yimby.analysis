@@ -25,7 +25,7 @@ if ENV_FILE.exists():
             k, v = line.split("=", 1)
             os.environ.setdefault(k.strip(), v.strip())
 
-from civic_utils import claude_local_call, all_meetings_dirs, watchdog_data_dir, load_scored_records
+from civic_utils import claude_local_call, all_meetings_dirs, watchdog_data_dir, load_scored_records, load_analysis_context
 sys.path.insert(0, str(REPO_ROOT))
 import config
 
@@ -36,27 +36,12 @@ MERGED_DIR = STRUCTURED_DIR / "meetings"
 MONTHLY_DIR = STRUCTURED_DIR / "monthly"
 OUTPUT_DIR = REPO_ROOT / "output" / "executive-summaries"
 
-SKILLS_DIR = WATCHDOG_DATA.parent / ".claude" / "skills"
-SKILL_NAMES = ["ca-housing-law"]
-
 MODE = "api"  # set by main()
 SCORED_DATA = {}  # set by main() — pre-computed scores from score_records.py
 client = None  # initialized only in API mode
 
 
-def load_skills():
-    parts = []
-    for name in SKILL_NAMES:
-        path = SKILLS_DIR / name / "SKILL.md"
-        if path.exists():
-            parts.append(path.read_text())
-        supplement = SKILLS_DIR / name / "recent-developments.md"
-        if supplement.exists():
-            parts.append(supplement.read_text())
-    return "\n\n---\n\n".join(parts)
-
-
-SKILLS_CONTEXT = load_skills()
+SKILLS_CONTEXT = load_analysis_context()
 
 
 def call_claude(prompt, max_tokens=2000):

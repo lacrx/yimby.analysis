@@ -85,6 +85,39 @@ def claude_local_call(prompt, system=None, timeout=300):
         return None
 
 
+def load_analysis_context(skill_names=None):
+    """Load analytical knowledge + watchdog skills for LLM system context.
+
+    Combines:
+      1. Knowledge articles from REPO_ROOT/knowledge/*.md (analytical framework)
+      2. Watchdog skills: SKILL.md + recent-developments.md per skill (intel feed)
+    """
+    if skill_names is None:
+        skill_names = ["ca-housing-law"]
+
+    parts = []
+
+    # 1. Knowledge articles (this repo)
+    knowledge_dir = REPO_ROOT / "knowledge"
+    if knowledge_dir.is_dir():
+        for md in sorted(knowledge_dir.glob("*.md")):
+            text = md.read_text().strip()
+            if text:
+                parts.append(text)
+
+    # 2. Watchdog skills
+    skills_dir = watchdog_data_dir().parent / ".claude" / "skills"
+    for name in skill_names:
+        skill_path = skills_dir / name / "SKILL.md"
+        if skill_path.exists():
+            parts.append(skill_path.read_text())
+        supplement = skills_dir / name / "recent-developments.md"
+        if supplement.exists():
+            parts.append(supplement.read_text())
+
+    return "\n\n---\n\n".join(parts)
+
+
 def load_scored_records():
     """Load pre-scored records from scored-records.jsonl."""
     scored_path = REPO_ROOT / "output" / "scored" / "scored-records.jsonl"

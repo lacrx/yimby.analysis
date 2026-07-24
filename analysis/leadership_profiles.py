@@ -34,7 +34,7 @@ if ENV_FILE.exists():
             k, v = line.split("=", 1)
             os.environ.setdefault(k.strip(), v.strip())
 
-from civic_utils import claude_local_call, watchdog_data_dir, load_scored_records
+from civic_utils import claude_local_call, watchdog_data_dir, load_scored_records, load_analysis_context
 sys.path.insert(0, str(REPO_ROOT))
 import config
 
@@ -43,9 +43,6 @@ STRUCTURED_DIR = WATCHDOG_DATA / "structured"
 MERGED_DIR = STRUCTURED_DIR / "meetings"
 OUTPUT_DIR = REPO_ROOT / "output" / "leadership-profiles"
 STATE_FILE = OUTPUT_DIR / "_state.json"
-
-SKILLS_DIR = WATCHDOG_DATA.parent / ".claude" / "skills"
-SKILL_NAMES = ["ca-housing-law"]
 
 MODE = "local"
 client = None
@@ -57,19 +54,7 @@ KNOWN_FIGURES = config.get("figures/known_figures", {})
 AGENCY_GROUP_LABELS = config.get("figures/agency_group_labels", {})
 
 
-def load_skills():
-    parts = []
-    for name in SKILL_NAMES:
-        path = SKILLS_DIR / name / "SKILL.md"
-        if path.exists():
-            parts.append(path.read_text())
-        supplement = SKILLS_DIR / name / "recent-developments.md"
-        if supplement.exists():
-            parts.append(supplement.read_text())
-    return "\n\n---\n\n".join(parts)
-
-
-SKILLS_CONTEXT = load_skills()
+SKILLS_CONTEXT = load_analysis_context()
 
 
 def call_claude(prompt, max_tokens=4000):

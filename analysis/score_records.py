@@ -33,16 +33,13 @@ if ENV_FILE.exists():
             k, v = line.split("=", 1)
             os.environ.setdefault(k.strip(), v.strip())
 
-from civic_utils import claude_local_call, claude_api_call, watchdog_data_dir
+from civic_utils import claude_local_call, claude_api_call, watchdog_data_dir, load_analysis_context
 
 WATCHDOG_DATA = watchdog_data_dir()
 STRUCTURED_DIR = WATCHDOG_DATA / "structured"
 OUTPUT_DIR = REPO_ROOT / "output" / "scored"
 SCORED_JSONL = OUTPUT_DIR / "scored-records.jsonl"
 LOG_DIR = OUTPUT_DIR / "scoring-log"
-
-SKILLS_DIR = WATCHDOG_DATA.parent / ".claude" / "skills"
-SKILL_NAMES = ["ca-housing-law"]
 
 MODE = "local"
 client = None
@@ -117,19 +114,7 @@ DOGWHISTLE_RE = re.compile("|".join(DOGWHISTLE_PATTERNS), re.IGNORECASE)
 # Skills / LLM support (only used for ambiguity resolution)
 # ---------------------------------------------------------------------------
 
-def load_skills():
-    parts = []
-    for name in SKILL_NAMES:
-        path = SKILLS_DIR / name / "SKILL.md"
-        if path.exists():
-            parts.append(path.read_text())
-        supplement = SKILLS_DIR / name / "recent-developments.md"
-        if supplement.exists():
-            parts.append(supplement.read_text())
-    return "\n\n---\n\n".join(parts)
-
-
-SKILLS_CONTEXT = load_skills()
+SKILLS_CONTEXT = load_analysis_context()
 
 
 def call_claude(prompt, max_tokens=2000):
