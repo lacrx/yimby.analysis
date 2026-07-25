@@ -41,7 +41,7 @@ Key config values: `identity/primary_city`, `advocacy/lens`, `advocacy/advocate_
 watchdog/data/structured/meetings-combined.jsonl  →  leadership_profiles.py
 watchdog/data/structured/monthly-digests.jsonl     →  executive_summaries.py
 watchdog/data/structured/all-records.jsonl         →  council_member_summaries.py
-watchdog/data/intel/intel-*.json                   →  update_skill_intel.py
+watchdog/.claude/skills/ca-housing-law/             →  load_analysis_context() (intel feed)
 ```
 
 Scripts read from watchdog via `config.yaml → watchdog_data`. They do not write back.

@@ -85,22 +85,35 @@ def claude_local_call(prompt, system=None, timeout=300):
         return None
 
 
-def load_analysis_context(skill_names=None):
+def load_analysis_context(topics=None, skill_names=None):
     """Load analytical knowledge + watchdog skills for LLM system context.
 
     Combines:
-      1. Knowledge articles from REPO_ROOT/knowledge/*.md (analytical framework)
+      1. Knowledge articles from REPO_ROOT/knowledge/<topic>/*.md
       2. Watchdog skills: SKILL.md + recent-developments.md per skill (intel feed)
+
+    Args:
+        topics: List of topic directory names to load (e.g. ["ca-housing-law",
+                "housing-advocacy"]). None loads all topics.
+        skill_names: Watchdog skill directories to load. Default: ["ca-housing-law"].
     """
     if skill_names is None:
         skill_names = ["ca-housing-law"]
 
     parts = []
 
-    # 1. Knowledge articles (this repo)
+    # 1. Knowledge articles (this repo) — organized by topic subdirectory
     knowledge_dir = REPO_ROOT / "knowledge"
     if knowledge_dir.is_dir():
-        for md in sorted(knowledge_dir.glob("*.md")):
+        if topics is None:
+            article_paths = sorted(knowledge_dir.rglob("*.md"))
+        else:
+            article_paths = []
+            for topic in topics:
+                topic_dir = knowledge_dir / topic
+                if topic_dir.is_dir():
+                    article_paths.extend(sorted(topic_dir.glob("*.md")))
+        for md in article_paths:
             text = md.read_text().strip()
             if text:
                 parts.append(text)

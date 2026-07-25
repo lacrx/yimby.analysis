@@ -19,14 +19,22 @@ This repo generates advocacy intelligence from structured municipal meeting data
 - `yimby.watchdog`: upstream pipeline — scrapes agendas, transcribes video, extracts structured JSONL. This repo reads from watchdog's `data/` directory via `config.yaml → watchdog_data`
 - `stoside.data`: municipal fiscal intelligence, budget/CIP/vote history
 
-## Knowledge Base Repos (upstream, read-only)
+## Knowledge Base
 
-Two external repos own all reusable knowledge — articles for context and Claude Code skills for session-level tooling. Fetch articles from them as needed; skills are handled by the Claude Code system, not by our analysis scripts.
+Two upstream KB repos provide policy and engineering context. Both are fetched via `gh api` — never cloned. One command per file.
 
-- **`lacrx/policy-knowledge-docs`** — policy articles and skills. Articles: CA housing law enforcement (`articles/ca-housing-law/ca-housing-enforcement.md`), PRA strategy, fiscal productivity, crash data methodology. Skills: `draft-pra-request`, `fetch-policy-bundle`, `evaluate-crash-study`.
-- **`lacrx/agent-knowledge-docs`** — engineering articles and skills. Articles: AWS deployment, Fargate, SDK patterns, testing. Skills: `scaffold-fastapi`, `provision-fargate-task`, etc.
+```
+gh api repos/lacrx/{repo}/contents/{path}?ref=main -H "Accept: application/vnd.github.raw+json"
+```
 
-Note: the `load_skills()` function in analysis scripts reads local `.claude/skills/ca-housing-law/` files and injects them as system context in LLM API calls. This is separate from the Claude Code skill system.
+**Discovery flow:** Fetch `QUICK-REF.md` → find matching row → fetch linked article/skill. If no match, try `TOPIC-INDEX.md`. If still no match, note "not covered in KB" and continue.
+
+- **`lacrx/policy-knowledge-docs`** — 21 policy articles covering CA housing law, housing advocacy, international housing models, land use analysis, fiscal policy, building safety, transportation, and PRA strategy. Skills: `draft-pra-request`, `fetch-policy-bundle`, `evaluate-crash-study`.
+- **`lacrx/agent-knowledge-docs`** — AWS deployment, Fargate, SDK patterns, testing. Skills: `scaffold-fastapi`, `provision-fargate-task`, etc. Fetch for infrastructure work only.
+
+**For Claude Code sessions:** invoke `/policy-context` — it walks you through the discovery flow and tells you which articles to fetch based on the task.
+
+**For analysis scripts:** a local cache in `knowledge/<topic>/` is maintained by `sync_knowledge.py` (auto-discovers from QUICK-REF.md). `load_analysis_context()` in `lib/civic_utils.py` loads cached articles + watchdog intel feed into LLM system context. Pass `topics=` to filter by directory. Run `python3 sync_knowledge.py` to refresh.
 
 ## Analytical Framework
 
@@ -62,7 +70,7 @@ These are hard constraints, not guidelines:
 watchdog/data/structured/meetings-combined.jsonl  →  leadership_profiles.py
 watchdog/data/structured/monthly-digests.jsonl     →  executive_summaries.py
 watchdog/data/structured/all-records.jsonl         →  council_member_summaries.py
-watchdog/data/intel/intel-*.json                   →  update_skill_intel.py
+watchdog/.claude/skills/ca-housing-law/            →  load_analysis_context() (intel feed)
 ```
 
 **Etrakit filing data** (distinct from meeting records):
@@ -100,26 +108,7 @@ All analysis scripts support two modes:
 - `--mode local`: uses `claude -p` (subscription, $0 marginal cost). Default for most scripts.
 - `--mode api`: uses Claude API via `anthropic` SDK. Costs money. Use for batch runs or when `claude -p` is unavailable.
 
-Both modes inject local `.claude/skills/ca-housing-law/` files as LLM system context when available.
-
-## Fetching KB Articles
-
-Both KBs use the same discovery flow. Fetch articles for context — not skills, which are loaded by Claude Code automatically.
-
-```
-gh api repos/lacrx/{repo}/contents/{path}?ref=main -H "Accept: application/vnd.github.raw+json"
-```
-
-1. Fetch `QUICK-REF.md` first. Find the row matching the task's topic.
-2. Extract the article path from the matched row and fetch it.
-3. If no match, fetch `TOPIC-INDEX.md` and retry.
-4. If still no match, continue without KB.
-
-### When to Fetch Which
-
-This repo is entirely policy-adjacent. Fetch **policy KB** (`policy-knowledge-docs`) **whenever relevant** — not just during planning, but during analysis design, prompt engineering, grading framework changes, or any work touching housing law, land use, transit, municipal governance, or advocacy strategy.
-
-Fetch **engineering KB** (`agent-knowledge-docs`) for infrastructure work only. Skip both for pure code cleanup.
+Both modes inject knowledge articles + watchdog skills via `load_analysis_context()`. Pass `topics=["ca-housing-law", "housing-advocacy"]` to limit which article directories are loaded (default: all).
 
 ## Working With Analysis Scripts
 
