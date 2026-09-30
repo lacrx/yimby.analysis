@@ -24,7 +24,7 @@ This repo generates advocacy intelligence from structured municipal meeting data
 Two upstream KB repos provide policy and engineering context. Both are fetched via `gh api` — never cloned. One command per file.
 
 ```
-gh api repos/lacrx/{repo}/contents/{path}?ref=main -H "Accept: application/vnd.github.raw+json"
+gh api repos/lacrx/{repo}/contents/{path} -H "Accept: application/vnd.github.raw+json"
 ```
 
 **Discovery flow:** Fetch `QUICK-REF.md` → find matching row → fetch linked article/skill. If no match, try `TOPIC-INDEX.md`. If still no match, note "not covered in KB" and continue.
