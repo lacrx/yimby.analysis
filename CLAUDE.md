@@ -55,6 +55,16 @@ A: +10 or higher | B: +5 to +9 | C: 0 to +4 | D: -1 to -9 | F: -10 or lower
 - Inclusionary weaponization: voting to raise citywide inclusionary rates = pro-housing (+1). Demanding a specific compliant project exceed existing requirements as grounds for denial = anti-housing (-2). The test: did they cite inclusionary shortfall to DENY a project that met existing rules?
 - Both market-rate and affordable housing add supply. Blocking either is anti-housing.
 
+## Research-First Rule
+
+For any question about policy, transportation, housing, advocacy strategy, or social science: always check sources before answering. Never answer from model knowledge alone.
+
+1. Check `policy-knowledge-docs` KB first (`gh api repos/lacrx/policy-knowledge-docs/contents/QUICK-REF.md -H "Accept: application/vnd.github.raw+json"`, find matching row, fetch that article)
+2. Web search to deepen what KB informed you of
+3. Only then synthesize an answer with citations
+
+Model knowledge is for framing and synthesis, not the primary source.
+
 ## Anti-Hallucination Rules
 
 These are hard constraints, not guidelines:
