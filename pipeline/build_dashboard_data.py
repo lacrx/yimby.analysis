@@ -219,13 +219,13 @@ def build_permitted_units(records: list[dict], tracts: gpd.GeoDataFrame) -> dict
 
     # RHNA pace: approved in cycle years / total RHNA
     cycle_approved = sum(
-        citywide_by_year.get(str(y), 0)
+        citywide_by_year.get(y, 0)
         for y in range(RHNA_CYCLE_START, year_max + 1)
     )
     rhna_pct = round(cycle_approved / RHNA["total"] * 100, 1) if RHNA["total"] else 0
 
     # YTD: current year
-    ytd = citywide_by_year.get(str(year_max), 0)
+    ytd = citywide_by_year.get(year_max, 0)
 
     tract_names = {}
     for _, row in tracts.iterrows():
@@ -254,7 +254,7 @@ def build_permitted_units(records: list[dict], tracts: gpd.GeoDataFrame) -> dict
         },
         "unlocated": {"totalApproved": unlocated_total},
         "yearRange": [year_min, year_max],
-        "sparklineByYear": [citywide_by_year.get(str(y), 0) for y in range(year_min, year_max + 1)],
+        "sparklineByYear": [citywide_by_year.get(y, 0) for y in range(year_min, year_max + 1)],
         "categories": sorted(set(UNIT_CAT_MAP.values())),
         "rhna": RHNA,
         "metadata": {
@@ -356,7 +356,7 @@ def build_affordable_units(records: list[dict], tracts: gpd.GeoDataFrame) -> dic
     for tier in INCOME_TIERS:
         rhna_target = RHNA.get(tier, 0)
         cycle_units = sum(
-            yearly_by_tier.get(str(y), {}).get(tier, 0)
+            yearly_by_tier.get(y, {}).get(tier, 0)
             for y in range(RHNA_CYCLE_START, year_max + 1)
         )
         rhna_pace_by_tier[tier] = {
@@ -387,12 +387,11 @@ def build_affordable_units(records: list[dict], tracts: gpd.GeoDataFrame) -> dic
     # Yearly stacked bar data
     yearly_stacked = []
     for y in range(year_min, year_max + 1):
-        yr = str(y)
         for tier in INCOME_TIERS:
             yearly_stacked.append({
                 "year": y,
                 "tier": tier,
-                "units": yearly_by_tier.get(yr, {}).get(tier, 0),
+                "units": yearly_by_tier.get(y, {}).get(tier, 0),
             })
 
     return {

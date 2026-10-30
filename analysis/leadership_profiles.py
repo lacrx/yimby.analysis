@@ -181,6 +181,7 @@ def format_records_for_prompt(records, member_info, scored_data=None):
     to keep the prompt within token budget. When scored_data is provided,
     annotates with pre-computed scores.
     """
+    # Filter to housing-relevant records first
     if len(records) > 60:
         filtered = [r for r in records if is_housing_relevant(r)]
         if len(filtered) < 10:
@@ -192,10 +193,17 @@ def format_records_for_prompt(records, member_info, scored_data=None):
     last_name = member_info.get("full_name", "").split()[-1].lower() if member_info.get("full_name") else ""
     aliases = [a.lower() for a in member_info.get("aliases", [])]
 
+    def _member_match(name):
+        nl = name.lower()
+        return (last_name and last_name in nl) or any(a in nl for a in aliases)
+
     by_year = defaultdict(list)
     for r in records:
         date = r.get("date", "")
-        year = int(date[:4]) if date and len(date) >= 4 else 0
+        try:
+            year = int(date[:4]) if date and len(date) >= 4 else 0
+        except ValueError:
+            year = 0
         if year:
             by_year[year].append(r)
 
@@ -203,6 +211,10 @@ def format_records_for_prompt(records, member_info, scored_data=None):
     total = 0
     net_score = 0
     action_count = 0
+    total_chars = 0
+    MAX_CHARS = 140000
+    MAX_PER_RECORD = 3000
+
     for year in sorted(by_year.keys()):
         year_text = f"\n### {year}\n"
         for r in by_year[year]:
@@ -212,41 +224,71 @@ def format_records_for_prompt(records, member_info, scored_data=None):
             mid = str(r.get("meeting_id", ""))
             scored = scored_data.get(mid) if scored_data else None
 
-            lines = [f"**{r.get('body', '?')} — {r.get('date', '?')} — {r.get('agency', '?')}**"]
+            lines = [f"**{r.get('body', '?')} — {r.get('date', '?')}**"]
 
             if scored:
-                lines.append(f"SCORED: {scored.get('advocacy_score', '?')} — {scored.get('advocacy_reason', '')}")
                 for ps in scored.get("position_scores", []):
                     ps_name = ps.get("member", "").lower()
-                    if last_name in ps_name or ps_name in aliases:
-                        lines.append(f"MEMBER SCORE: {ps['member']} {ps.get('score', 0):+d} ({ps.get('action_summary', '')[:60]})")
+                    if _member_match(ps_name):
+                        lines.append(f"MEMBER SCORE: {ps['member']} {ps.get('score', 0):+d} ({ps.get('action_summary', '')[:80]})")
                         net_score += ps.get("score", 0)
                         action_count += 1
 
+            # Include housing-relevant votes, plus any vote where this member dissented
             for v in r.get("votes", []):
-                vote_line = f"VOTE: {v['item']} → {v['result']}"
-                if v.get("yes"):
-                    vote_line += f" (yes: {', '.join(v['yes'])})"
+                item_relevant = any(kw in v.get("item", "").lower() for kw in HOUSING_KEYWORDS)
+                member_dissented = any(_member_match(name) for name in v.get("no", []))
+                if not item_relevant and not member_dissented:
+                    continue
+                item_text = v['item'][:150]
+                vote_line = f"VOTE: {item_text} → {v['result']}"
                 if v.get("no"):
                     vote_line += f" (no: {', '.join(v['no'])})"
+                elif v.get("yes") and len(v["yes"]) <= 5:
+                    vote_line += f" (yes: {', '.join(v['yes'])})"
                 lines.append(vote_line)
+
             for cp in r.get("council_positions", []):
-                label = cp.get('action') or cp.get('stance', 'unknown')
-                lines.append(f"POSITION: {cp['member']} — {label}: {cp.get('evidence', '')}")
+                if _member_match(cp.get("member", "")):
+                    label = cp.get('action') or cp.get('stance', 'unknown')
+                    evidence = cp.get('evidence', '')[:200]
+                    lines.append(f"POSITION: {cp['member']} — {label}: {evidence}")
+
             for h in r.get("housing_items", []):
-                h_line = f"HOUSING: [{h.get('type', '?')}] {h['description']}"
+                desc = h.get('description', '')[:150]
+                h_line = f"HOUSING: [{h.get('type', '?')}] {desc}"
+                if h.get("units"):
+                    h_line += f" ({h['units']} units)"
                 if h.get("outcome"):
                     h_line += f" → {h['outcome']}"
                 if h.get("state_law_flags"):
                     h_line += f" ⚠ {', '.join(h['state_law_flags'])}"
                 lines.append(h_line)
+
+            # Only include legal flags that mention this member or housing keywords
             for flag in r.get("legal_flags", []):
-                lines.append(f"LEGAL: {flag}")
+                flag_lower = flag.lower()
+                if last_name in flag_lower or any(kw in flag_lower for kw in ("housing", "density", "rhna", "haa", "sb 330", "ceqa")):
+                    lines.append(f"LEGAL: {flag[:200]}")
+
             for q in r.get("key_quotes", []):
-                lines.append(f"QUOTE: {q}")
-            year_text += "\n".join(lines) + "\n"
-            total += 1
+                q_text = q if isinstance(q, str) else q.get("text", str(q))
+                if last_name in q_text.lower():
+                    lines.append(f"QUOTE: {q_text[:200]}")
+
+            if len(lines) > 1:
+                block = "\n".join(lines) + "\n"
+                if len(block) > MAX_PER_RECORD:
+                    block = block[:MAX_PER_RECORD] + "\n[...truncated...]\n"
+                total_chars += len(block)
+                year_text += block
+                total += 1
+
+            if total_chars > MAX_CHARS:
+                break
         parts.append(year_text)
+        if total_chars > MAX_CHARS:
+            break
 
     return "\n".join(parts), total, net_score, action_count
 
@@ -273,7 +315,7 @@ def generate_profile(slug, info, records, scored_data=None):
         role_context = f"""This official serves on the {group_label}.
 County-level housing actions include: regional housing mandates (RHNA allocation),
 unincorporated area zoning, affordable housing trust fund allocations, farmworker housing,
-homelessness programs, and votes on state housing law compliance. Grade using the same
+homelessness programs, and votes on state housing law compliance. Analyze using the same
 housing advocacy framework but at the county/regional scale.
 
 IMPORTANT: Weigh actions by how directly they affect housing outcomes in {_city} and
@@ -283,23 +325,16 @@ that flow to {_city} matter more than actions in distant parts of the county."""
         role_context = f"""This official serves on the {group_label}.
 Planning commissioners make recommendations on project approvals, zoning changes,
 specific plans, and environmental review. Their votes directly shape which housing
-projects advance to council. Grade using the same housing advocacy framework.
+projects advance to council. Analyze using the same housing advocacy framework.
 
 These votes have maximum direct impact on {_city} housing outcomes."""
 
-    score_header = ""
+    score_context = ""
     if scored_data and action_count > 0:
-        grade_thresholds = [(10, "A"), (5, "B"), (0, "C"), (-1, "D")]
-        grade = "F"
-        for threshold, letter in grade_thresholds:
-            if net_score >= threshold:
-                grade = letter
-                break
-        score_header = f"""
-**PRE-COMPUTED SCORE:** Net score {net_score:+d} across {action_count} scored actions → Grade {grade}
-These scores were computed deterministically from voting records using the rubric below.
-Use these scores as your baseline. Do NOT re-derive scores from scratch — validate against
-the MEMBER SCORE annotations in the meeting data and adjust only if you find clear errors."""
+        score_context = f"""
+**Pre-computed action tally:** {net_score:+d} net across {action_count} scored housing actions.
+This is a rough directional signal from deterministic scoring — use it as context, not a grade.
+The MEMBER SCORE annotations in the meeting data below show the individual action scores."""
 
     _advocate_role = config.get("advocacy/advocate_role", "housing advocate")
     _lens = config.get("advocacy/lens", "")
@@ -309,62 +344,42 @@ the MEMBER SCORE annotations in the meeting data and adjust only if you find cle
 **Title:** {info['title']}
 **Terms:** {info['terms']}
 **Total substantive meeting references:** {total}
-{score_header}
+{score_context}
 
 {role_context}
 
-Your task:
-1. **Housing Advocacy Grade** (A through F): Grade their record using ACTIONS, not rhetoric.
+Do NOT assign letter grades or numerical scores. Present the factual record and let it speak for itself.
 
-   ## Scoring Framework
+Your task — produce these sections:
 
-   ### Strong Pro-Housing (+2 each):
-   - Vote to REMOVE or RAISE density caps
-   - Vote to ELIMINATE or REDUCE parking minimums
-   - Vote to LEGALIZE missing middle housing by-right
-   - Vote FOR state preemption of restrictive zoning (SB 9, SB 10, RHNA compliance)
-   - Vote to APPROVE housing projects (market-rate OR affordable)
-   - Vote FOR regional housing funding or transit-oriented development
+1. **Vote Pattern Analysis** (400-800 words):
+   Build from the ACTIONS OVER WORDS doctrine. For each major policy area where this official has votes on record, describe their pattern:
+   - **Housing project votes**: Which projects did they approve? Which did they block or try to block? Were denials on legal or policy grounds? Did state law (HAA, density bonus, SB 330) force their hand?
+   - **Density and zoning**: Votes on density caps, parking minimums, upzoning, land use redesignation. Direction: expanding capacity or restricting it?
+   - **Tenant protections**: Rent stabilization, relocation assistance, just-cause eviction, legal aid funding. Did they support, oppose, or selectively engage?
+   - **Affordable housing finance**: Bond authorizations, CDBG/HOME allocations, inclusionary policy. Did they treat affordable housing differently than market-rate?
+   - **State mandate compliance**: RHNA, SB 9/10, SB 79, "local control" resolutions. Compliance or resistance?
 
-   ### Moderate Pro-Housing (+1 each):
-   - Support for inclusionary zoning requirements
-   - Tenant protections: relocation assistance, just-cause eviction, rent stabilization
-   - Streamlining discretionary approvals
-   - Support for transit-oriented density increases
-   - Votes for homelessness services and affordable housing finance
+2. **Contradictions and Patterns**:
+   This is where you add the most value. Identify:
+   - Rhetoric vs. record mismatches — pro-housing language paired with anti-housing votes (or vice versa)
+   - Selective engagement — e.g., supports tenant protections but blocks supply, or approves market-rate but opposes affordable
+   - Vote flips — positions that changed between introduction and adoption, or evolved over time
+   - Coalition behavior — who do they vote with on housing? When do coalitions break?
+   - Inclusionary weaponization — did they ever use inclusionary requirements to block a specific compliant project?
 
-   ### Anti-Housing (-1 each):
-   - Vote to MAINTAIN parking requirements at 1+ space/unit
-   - Citing "community character" to oppose density
-   - Opposing state housing mandates under "local control" framing
+3. **Key Votes Table**: The 5-10 most significant housing-related votes with date, item, their vote, and outcome.
 
-   ### Strong Anti-Housing (-2 each):
-   - Vote to ADD or MAINTAIN density caps
-   - Vote AGAINST housing projects
-   - Using inclusionary rates as a POISON PILL to kill specific compliant projects
-   - Weaponizing CEQA against housing
-   - Opposing regional housing allocations (RHNA)
+4. **Strategic Assessment** (2-3 sentences): From an advocate's perspective — is this official a reliable ally, a reliable opponent, or persuadable? On what issues? What's the trend?
 
-   GRADING SCALE by net score:
-   - A: +10 or higher
-   - B: +5 to +9
-   - C: 0 to +4
-   - D: -1 to -9
-   - F: -10 or lower
-   Add +/- within bands.
+Analytical framework:
+- Approving housing (market-rate or affordable) = pro-housing. Blocking = anti-housing.
+- Removing/raising density caps = pro-housing. Adding/maintaining = anti-housing.
+- Tenant protections are genuinely pro-housing policy. Never penalize them.
+- Using inclusionary rates to kill a SPECIFIC compliant project = anti-housing. Raising citywide rates = pro-housing.
+- State-law-compelled approvals (HAA, density bonus) are compliance, not leadership. Note when someone's "yes" votes are all compelled.
 
-2. **Executive Summary** (400-800 words):
-   - Their VOTING RECORD on housing — every project vote, zoning vote, density vote
-   - Whether they use pro-housing rhetoric to cover anti-housing votes
-   - Specific projects and outcomes
-   - Alliances and voting blocs
-   - Evolution over time
-
-3. **Key Votes Table**: 5-10 most significant housing-related votes.
-
-Be analytical and specific. ACTIONS OVER WORDS. This is an advocacy tool.
-
-CRITICAL: Only reference votes and actions in the source data below. NEVER invent votes, meetings, or actions. If the record is thin, say so.
+CRITICAL: Only reference votes and actions in the source data below. NEVER invent votes, meetings, or actions. If the record is thin, say so — a thin record produces a thin profile with a caveat, not a complete-sounding profile with fabricated detail.
 
 Meeting references:
 {text}"""
@@ -386,16 +401,16 @@ def generate_comparative(agency_group, label, profiles):
     _advocate_role = config.get("advocacy/advocate_role", "housing advocate")
     prompt = f"""You are writing a comparative analysis of {label} members for a {_advocate_role} in {_city}/{_region}.
 
-Below are individual profiles graded on housing advocacy using an ACTIONS-BASED framework.
+Below are individual profiles analyzing housing advocacy records using an ACTIONS-BASED framework.
 
 Synthesize into a comparative document:
 
-1. **Power Map**: Reliable housing allies (by VOTES)? Obstacles? Swing votes?
-2. **Voting Blocs**: What coalitions form on housing votes? How stable?
-3. **Grade Summary Table**: All members with grade and one-line rationale
-4. **Strategic Assessment**: Where should advocacy energy go? Who is persuadable?
-5. **Supply Skepticism Watch**: Who uses pro-housing language to cover anti-housing votes?
-6. **Historical Arc**: How has the body's housing posture evolved?
+1. **Power Map**: Based on VOTES — who are reliable housing allies? Reliable opponents? Swing votes? Be specific about which issues each member is reliable on.
+2. **Voting Blocs**: What coalitions form on housing votes? When do they break? Which splits are 3-2 vs 4-1 vs unanimous — and what drives the difference?
+3. **Member Summary Table**: All members with a one-line characterization of their housing record (not a grade — a description of their pattern).
+4. **Contradictions**: Which members have the widest gap between rhetoric and record? Between different policy areas (e.g., pro-supply but anti-tenant, or vice versa)?
+5. **Strategic Assessment**: Where should advocacy energy go? Who is persuadable and on what issues? What's the minimum winning coalition for pro-housing votes?
+6. **Trajectory**: How has the body's housing posture changed? Is it getting better or worse, and why?
 
 Be direct and strategic. ACTIONS OVER WORDS. Target: 800-1200 words.
 
