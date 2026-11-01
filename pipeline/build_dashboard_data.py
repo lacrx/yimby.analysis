@@ -179,21 +179,19 @@ def assign_tracts(records: list[dict], tracts: gpd.GeoDataFrame) -> list[dict]:
     return records
 
 
+def _get_approved_units(record: dict) -> int:
+    approved = int(record.get("tot_approved_units") or 0)
+    if approved > 0:
+        return approved
+    if record.get("application_status") == "Approved":
+        return int(record.get("tot_proposed_units") or 0)
+    return 0
+
+
 def build_permitted_units(records: list[dict], tracts: gpd.GeoDataFrame) -> dict:
     """Aggregate approved units by tract, year, and unit category."""
     years = sorted(set(r["year"] for r in records))
     year_min, year_max = int(years[0]), int(years[-1])
-
-    # Trim year range to last year with nonzero approved units.
-    # Years where the jurisdiction hasn't populated tot_approved_units
-    # would show as false zeros on the dashboard.
-    approved_by_year = {}
-    for r in records:
-        yr = r["year"]
-        approved_by_year[yr] = approved_by_year.get(yr, 0) + int(r.get("tot_approved_units") or 0)
-    while year_max > year_min and approved_by_year.get(str(year_max), 0) == 0:
-        year_max -= 1
-    print(f"  Reliable year range: {year_min}–{year_max}", file=sys.stderr)
 
     tract_data = defaultdict(lambda: {
         "totalApproved": 0,
@@ -208,7 +206,7 @@ def build_permitted_units(records: list[dict], tracts: gpd.GeoDataFrame) -> dict
     unlocated_total = 0
 
     for r in records:
-        approved = int(r.get("tot_approved_units") or 0)
+        approved = _get_approved_units(r)
         if approved <= 0:
             continue
 
