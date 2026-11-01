@@ -236,9 +236,6 @@ def build_permitted_units(records: list[dict], tracts: gpd.GeoDataFrame) -> dict
     )
     rhna_pct = round(cycle_approved / RHNA["total"] * 100, 1) if RHNA["total"] else 0
 
-    # YTD: current year
-    ytd = citywide_by_year.get(str(year_max), 0)
-
     tract_names = {}
     for _, row in tracts.iterrows():
         tract_names[row["GEOID"]] = row.get("NAMELSAD", f"Tract {row['GEOID'][-6:]}")
@@ -260,7 +257,6 @@ def build_permitted_units(records: list[dict], tracts: gpd.GeoDataFrame) -> dict
         "citywide": {
             "totalApproved": citywide_total,
             "rhnaPace": rhna_pct,
-            "ytd": ytd,
             "byYear": dict(citywide_by_year),
             "byCategory": dict(citywide_by_cat),
         },
