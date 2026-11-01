@@ -184,6 +184,17 @@ def build_permitted_units(records: list[dict], tracts: gpd.GeoDataFrame) -> dict
     years = sorted(set(r["year"] for r in records))
     year_min, year_max = int(years[0]), int(years[-1])
 
+    # Trim year range to last year with nonzero approved units.
+    # Years where the jurisdiction hasn't populated tot_approved_units
+    # would show as false zeros on the dashboard.
+    approved_by_year = {}
+    for r in records:
+        yr = r["year"]
+        approved_by_year[yr] = approved_by_year.get(yr, 0) + int(r.get("tot_approved_units") or 0)
+    while year_max > year_min and approved_by_year.get(str(year_max), 0) == 0:
+        year_max -= 1
+    print(f"  Reliable year range: {year_min}–{year_max}", file=sys.stderr)
+
     tract_data = defaultdict(lambda: {
         "totalApproved": 0,
         "byYear": defaultdict(int),
@@ -202,6 +213,9 @@ def build_permitted_units(records: list[dict], tracts: gpd.GeoDataFrame) -> dict
             continue
 
         year = r["year"]
+        if int(year) < year_min or int(year) > year_max:
+            continue
+
         cat = UNIT_CAT_MAP.get(r.get("unit_cat", ""), "Other")
         tract_id = r.get("tractId")
 
@@ -219,13 +233,13 @@ def build_permitted_units(records: list[dict], tracts: gpd.GeoDataFrame) -> dict
 
     # RHNA pace: approved in cycle years / total RHNA
     cycle_approved = sum(
-        citywide_by_year.get(y, 0)
+        citywide_by_year.get(str(y), 0)
         for y in range(RHNA_CYCLE_START, year_max + 1)
     )
     rhna_pct = round(cycle_approved / RHNA["total"] * 100, 1) if RHNA["total"] else 0
 
     # YTD: current year
-    ytd = citywide_by_year.get(year_max, 0)
+    ytd = citywide_by_year.get(str(year_max), 0)
 
     tract_names = {}
     for _, row in tracts.iterrows():
@@ -254,7 +268,7 @@ def build_permitted_units(records: list[dict], tracts: gpd.GeoDataFrame) -> dict
         },
         "unlocated": {"totalApproved": unlocated_total},
         "yearRange": [year_min, year_max],
-        "sparklineByYear": [citywide_by_year.get(y, 0) for y in range(year_min, year_max + 1)],
+        "sparklineByYear": [citywide_by_year.get(str(y), 0) for y in range(year_min, year_max + 1)],
         "categories": sorted(set(UNIT_CAT_MAP.values())),
         "rhna": RHNA,
         "metadata": {
