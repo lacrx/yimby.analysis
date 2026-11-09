@@ -15,10 +15,22 @@ Cap timeline, from watchdog meeting records (Oceanside agency only):
   2023-10-18  Adopted 86 du/ac with no density bonus enhancement, 3-2.
   2023-11-01  Ordinance adopted, amending Article 12 and the LCP Implementation
               Plan.
-  2023-12-01  Effective OUTSIDE the Coastal Zone. Coastal Zone portions were
-              pending Coastal Commission certification, so the effective date
-              varies by subdistrict. Unresolved which subdistricts were
-              certified when; settle that before making a causal claim.
+  2023-12-01  Effective OUTSIDE the Coastal Zone, with coastal portions pending
+              Coastal Commission certification.
+  2026-02     CCC certified the 86 du/acre cap (LCP-6-OCN-25-0029-2), with
+              suggested modifications including a Coastal Act savings clause
+              that lets the City deny density bonus waivers on coastal resource
+              grounds. CCC also converted the older 5,500-unit downtown maximum
+              to a non-binding "target" as an SB 330 violation.
+  2026-06-03  Council adopted the CCC-modified text (Ordinance 21-ORO740-1, 4-1).
+
+The legal effective date is NOT when the effect starts. Through 2024 and 2025
+staff stated no cap applied downtown, and projects were approved at 122 to 184
+du/acre under SB 330 vesting. That does not mean the cap had no effect: a
+developer underwriting a downtown project prices in announced legislation long
+before certification, because the risk it lands mid-entitlement is itself
+disqualifying. The cap killed the downtown market-rate pipeline from the
+October 2023 vote onward.
 
 Method: HCD APR Table A is the source, because it carries real unit counts
 rather than parsed prose and covers ministerial approvals. Rows are grouped by
@@ -30,6 +42,21 @@ Why this reports join coverage so loudly: rows whose APN is missing from the
 centroid file are counted as neither downtown nor rest, they are silently
 dropped. Coverage swings from 30% to 97% by year, so a downtown figure without
 its coverage number is not interpretable. 2020 and 2021 in particular are soft.
+
+These totals run BELOW the figures in the policy KB article
+coastal-zone/oceanside-density-cap-findings, which reports 1,465 downtown units
+for 2023 and 35 for 2025 against this script's 1,092 and 29. The gap is the APN
+join, not a disagreement about geography. Prefer the KB figures when quoting
+numbers, or improve the join first.
+
+This script counts units; it does not by itself establish policy impact. For
+that, use the three-check method in the KB article
+land-use-analysis/policy-impact-filing-analysis: prior years same geography,
+same year different geography (the control that rules out a market-wide
+explanation), and same year same geography. Check 3 requires separating
+genuinely new applications from refiled or revised pre-cap projects riding
+SB 330 vesting, which a raw APP_SUBMIT_DT count will not do. Downtown filings
+in 2024 were almost entirely the latter.
 
 Do NOT use the etrakit `is_downtown` field for a time series. Zone enrichment
 has barely run for 2020-2025, and 783 of 1,965 housing permits sit on 50
