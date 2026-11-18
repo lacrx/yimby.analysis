@@ -4,3 +4,4 @@ __pycache__/
 .env
 config.local.yaml
 pipeline/.cache/
+.firecrawl/
